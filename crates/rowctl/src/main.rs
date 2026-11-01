@@ -6,6 +6,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
+mod check;
 mod ctx;
 mod health;
 mod history;
@@ -57,6 +58,8 @@ enum Command {
     },
     /// Show every stroke's force curve and timing in a recording
     Curves { file: PathBuf },
+    /// Score the fault detectors on a recording with marked blocks
+    Check { file: PathBuf },
     /// Analyse recordings and save them as sessions
     Analyze {
         files: Vec<PathBuf>,
@@ -170,6 +173,7 @@ async fn main() -> Result<()> {
         Command::Dump { file } => inspect::dump(&file),
         Command::Replay { file, speed } => inspect::replay(&file, speed).await,
         Command::Curves { file } => inspect::curves(&file),
+        Command::Check { file } => check::run(&file),
         Command::Analyze { files, all, no_save, db } => review::analyze(files, all, no_save, db).await,
         Command::Sessions { db } => review::sessions(db).await,
         Command::Profile(args) => profile::run(args).await,

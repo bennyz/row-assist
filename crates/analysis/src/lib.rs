@@ -2,6 +2,7 @@
 //! of events, so it runs the same live, on replay, and in tests.
 
 pub mod cues;
+pub mod fixtures;
 pub mod metrics;
 pub mod planner;
 pub mod pose;

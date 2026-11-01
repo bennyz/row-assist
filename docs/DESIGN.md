@@ -272,6 +272,13 @@ video.
 *on purpose* (e.g., 20 strokes bending the arms early). The detector must flag those strokes
 and stay quiet on clean ones.
 
+**Built:** during `rowctl record`, type `0` (clean) or `1`–`4` (short compression, shooting
+the slide, early arms, rushed recovery) + Enter as each block starts; they're stored as
+`Marker` events. `rowctl check <file>` scores every block (`analysis::fixtures`), skipping
+its first 2 strokes: a fault block passes if the focus coach would have cued that fault, a
+clean block if it would have cued nothing, with each fault's flag rate alongside. Suggested
+fixture: 2 min clean, 2 min of one fault, 2 min clean, per fault.
+
 ---
 
 ## 6. Effort and fitness

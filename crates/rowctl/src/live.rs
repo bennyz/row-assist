@@ -279,6 +279,43 @@ impl Coach {
 
 /// The database is useful for zones and saving, but recording must not
 /// depend on it.
+/// Typed marks become `Marker` events: what's being rowed on purpose, for
+/// checking the fault detectors (`rowctl check`). Lines can also be piped in.
+fn spawn_markers(clock: Clock, tx: mpsc::Sender<Event>) {
+    use std::io::{BufRead, IsTerminal};
+    if std::io::stdin().is_terminal() {
+        println!(
+        "Mark what you're rowing on purpose: type a number and Enter. 0 clean, 1 {}, 2 {}, 3 {}, 4 {}. Other text is saved as a note.",
+        Fault::ShortCompression.label(),
+        Fault::ShootingSlide.label(),
+        Fault::EarlyArms.label(),
+        Fault::RushedRecovery.label()
+        );
+    }
+    // A plain thread: reading stdin blocks, and it ends with the process.
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { break };
+            let label = match line.trim() {
+                "" => continue,
+                "0" => analysis::fixtures::CLEAN.to_string(),
+                "1" => Fault::ShortCompression.label().into(),
+                "2" => Fault::ShootingSlide.label().into(),
+                "3" => Fault::EarlyArms.label().into(),
+                "4" => Fault::RushedRecovery.label().into(),
+                other => other.to_string(),
+            };
+            let ev = Event {
+                t_us: clock.now_us(),
+                kind: EventKind::Marker { label },
+            };
+            if tx.blocking_send(ev).is_err() {
+                break;
+            }
+        }
+    });
+}
+
 async fn print_readiness(ctx: Option<&Ctx>) {
     if let Some(c) = ctx
         && let Ok(line) = crate::health::line(c).await
@@ -402,6 +439,9 @@ async fn run(
     } else {
         None
     };
+    if writer.is_some() {
+        spawn_markers(clock, tx.clone());
+    }
     drop(tx);
 
     let start_us = clock.now_us();
@@ -487,6 +527,7 @@ impl View {
             EventKind::Pm5Status(s) => self.pm5 = Some(s.clone()),
             EventKind::Heart(h) => self.bpm = Some(h.bpm),
             EventKind::Pose(_) => self.poses += 1,
+            EventKind::Marker { label } => return Some(format!("● marked: {label}")),
             EventKind::Link(link) => {
                 let (slot, name) = match link.device {
                     Device::Pm5 => (&mut self.pm5_link, "PM5"),
