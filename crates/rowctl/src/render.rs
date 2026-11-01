@@ -75,7 +75,15 @@ pub fn record_line(r: &StrokeRecord, start_us: i64, heart: Option<&HeartProfile>
         hr,
         opt(r.peak_n, |p| format!("{p:.0}")),
         sparkline(&r.force_n, 25),
-    )
+    ) + &faults(r)
+}
+
+fn faults(r: &StrokeRecord) -> String {
+    if r.faults.is_empty() {
+        return String::new();
+    }
+    let names: Vec<&str> = r.faults.iter().map(|h| h.fault.label()).collect();
+    format!("  [{}]", names.join(", "))
 }
 
 #[cfg(test)]

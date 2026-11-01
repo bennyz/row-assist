@@ -4,6 +4,8 @@
 //! Thresholds start from common coaching norms and are to be tuned on
 //! deliberately-rowed recordings.
 
+use std::collections::VecDeque;
+
 use model::{Event, EventKind, Pose};
 use serde::{Deserialize, Serialize};
 
@@ -290,6 +292,71 @@ pub fn faults(stroke: &StrokeRecord, pose: Option<&StrokePose>) -> Vec<FaultHit>
     hits
 }
 
+/// Technique as the session happens: buffers recent frames, calibrates the
+/// sync offset as strokes arrive, and gives each completed stroke its pose
+/// and faults. Converges on what [`apply`] finds after the fact.
+#[derive(Debug, Default)]
+pub struct LiveTechnique {
+    frames: VecDeque<Pose>,
+    candidates: Vec<f64>,
+    strokes: usize,
+}
+
+/// Frames kept: several strokes, enough for side, tilt and scale.
+const LIVE_BUFFER_US: i64 = 15_000_000;
+
+impl LiveTechnique {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn frame(&mut self, pose: &Pose) {
+        if !has_pose(pose) {
+            return;
+        }
+        // Frames can arrive slightly out of capture order.
+        let at = self.frames.partition_point(|f| f.captured_us <= pose.captured_us);
+        self.frames.insert(at, pose.clone());
+        let newest = self.frames.back().map_or(0, |f| f.captured_us);
+        while self.frames.front().is_some_and(|f| newest - f.captured_us > LIVE_BUFFER_US) {
+            self.frames.pop_front();
+        }
+    }
+
+    /// The offset so far: median of the strokes calibrated on.
+    pub fn offset_ms(&self) -> Option<f64> {
+        let mut c = self.candidates.clone();
+        (!c.is_empty()).then(|| {
+            c.sort_by(f64::total_cmp);
+            c[c.len() / 2]
+        })
+    }
+
+    /// Attach pose and faults to a stroke that just completed.
+    pub fn stroke(&mut self, s: &mut StrokeRecord) {
+        let frames = self.frames.make_contiguous();
+        let view = camera_view(frames);
+        if let Some(v) = &view
+            && self.strokes >= SYNC_SKIP
+            && self.candidates.len() < SYNC_STROKES
+        {
+            let lo = first_at(frames, s.t_catch_us - SYNC_BEFORE_US);
+            let hi = first_at(frames, s.t_catch_us + SYNC_AFTER_US);
+            if let Some(t) = reach_peak(frames, lo, hi, v) {
+                self.candidates.push((s.t_catch_us as f64 - t) / 1000.0);
+            }
+        }
+        self.strokes += 1;
+        let offset_ms = self.offset_ms();
+        let frames = self.frames.make_contiguous();
+        s.pose = view.and_then(|mut v| {
+            v.offset_ms = offset_ms;
+            stroke_pose(s, frames, &v)
+        });
+        s.faults = faults(s, s.pose.as_ref());
+    }
+}
+
 /// How often each fault showed up.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FaultRate {
@@ -443,6 +510,40 @@ mod tests {
         assert_eq!(back.len(), strokes.len());
         assert_eq!(back[5].pose.as_ref().unwrap().catch_figure[3], None);
         assert_eq!(back[5].faults, strokes[5].faults);
+    }
+
+    #[test]
+    fn live_finds_what_the_whole_session_finds() {
+        for fault in [None, Some(SimFault::EarlyArms)] {
+            let cfg = SimConfig {
+                pose: Some(PoseSim {
+                    fault,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let events = generate(cfg, T0, Duration::from_secs(120));
+            let after = crate::analyze(&events, None).strokes;
+
+            let mut asm = crate::strokes::StrokeAssembler::new();
+            let mut live = LiveTechnique::new();
+            let mut strokes = Vec::new();
+            for ev in &events {
+                if let EventKind::Pose(p) = &ev.kind {
+                    live.frame(p);
+                }
+                if let Some(mut s) = asm.push(ev) {
+                    live.stroke(&mut s);
+                    strokes.push(s);
+                }
+            }
+            assert!((live.offset_ms().unwrap() - 60.0).abs() <= 17.0);
+            // Once calibrated, live and after-the-fact agree stroke by stroke.
+            for (l, a) in strokes.iter().zip(&after).skip(SYNC_SKIP + SYNC_MIN) {
+                let kinds = |s: &StrokeRecord| s.faults.iter().map(|h| h.fault).collect::<Vec<_>>();
+                assert_eq!(kinds(l), kinds(a), "stroke {} ({fault:?})", l.index);
+            }
+        }
     }
 
     #[test]

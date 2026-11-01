@@ -3,11 +3,12 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use analysis::cues::Pacer;
+use analysis::cues::{FocusCoach, Pacer};
 use analysis::strokes::{StrokeAssembler, StrokeRecord};
+use analysis::technique::{Fault, LiveTechnique};
 use analysis::zones::HeartProfile;
 use anyhow::Result;
-use clap::Args;
+use clap::{Args, ValueEnum};
 use devices::{h10, pm5, sim};
 use model::{Clock, Device, Event, EventKind, Pm5Status};
 use recording::{FileWriter, Header};
@@ -17,6 +18,7 @@ use crate::ctx::Ctx;
 use crate::plan::{Plan, describe_targets, parse_rate, parse_watts};
 use crate::render::{clock, record_line};
 use crate::review;
+use crate::simulate::FaultArg;
 use crate::speak::Speaker;
 
 /// The drag factor is checked once it has settled, after this many strokes.
@@ -68,6 +70,74 @@ pub struct LiveArgs {
     /// Address for the camera page (with --camera)
     #[arg(long, default_value = "127.0.0.1:8080")]
     listen: std::net::SocketAddr,
+    /// The one technique fault to coach this session (auto: the most
+    /// frequent one in your last 3 sessions)
+    #[arg(long, value_enum, default_value_t = FocusArg::Auto)]
+    focus: FocusArg,
+    /// With --sim: also simulate the camera (a stick-figure rower)
+    #[arg(long, requires = "sim")]
+    sim_camera: bool,
+    /// With --sim: the simulated rower makes this fault (implies --sim-camera)
+    #[arg(long, value_enum, requires = "sim")]
+    sim_fault: Option<FaultArg>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum FocusArg {
+    Auto,
+    None,
+    ShortCompression,
+    ShootingSlide,
+    EarlyArms,
+    RushedRecovery,
+}
+
+impl LiveArgs {
+    /// Will strokes have a camera view?
+    fn camera_on(&self) -> bool {
+        self.camera || self.sim_camera || self.sim_fault.is_some()
+    }
+}
+
+/// Faults rarer than this in recent sessions aren't worth a session's focus.
+const FOCUS_MIN_RATE: f64 = 0.10;
+const FOCUS_SESSIONS: usize = 3;
+
+async fn choose_focus(args: &LiveArgs, ctx: Option<&Ctx>) -> Option<Fault> {
+    let chosen = match args.focus {
+        FocusArg::None => return None,
+        FocusArg::ShortCompression => Fault::ShortCompression,
+        FocusArg::ShootingSlide => Fault::ShootingSlide,
+        FocusArg::EarlyArms => Fault::EarlyArms,
+        FocusArg::RushedRecovery => Fault::RushedRecovery,
+        FocusArg::Auto => {
+            let sessions = store::sessions::list_sessions(&ctx?.pool).await.ok()?;
+            let recent: Vec<_> = sessions.iter().rev().filter(|s| !s.meta.simulated).take(FOCUS_SESSIONS).collect();
+            let rate = |f: Fault| {
+                let rates: Vec<f64> = recent
+                    .iter()
+                    .filter_map(|s| s.summary.faults.iter().find(|r| r.fault == f && r.of > 0))
+                    .map(|r| r.hits as f64 / r.of as f64)
+                    .collect();
+                (!rates.is_empty()).then(|| rates.iter().sum::<f64>() / rates.len() as f64)
+            };
+            let (fault, r) = Fault::ALL
+                .into_iter()
+                .filter(|f| args.camera_on() || !f.needs_camera())
+                .filter_map(|f| rate(f).map(|r| (f, r)))
+                .max_by(|a, b| a.1.total_cmp(&b.1))?;
+            if r < FOCUS_MIN_RATE {
+                return None;
+            }
+            println!("Focus picked from your last sessions: {} on {:.0}% of strokes", fault.label(), r * 100.0);
+            fault
+        }
+    };
+    if chosen.needs_camera() && !args.camera_on() {
+        eprintln!("Focus {} needs the camera (--camera); not coaching it", chosen.label());
+        return None;
+    }
+    Some(chosen)
 }
 
 /// Everything the live loop needs besides the devices.
@@ -75,11 +145,13 @@ struct Coach {
     heart: Option<HeartProfile>,
     drag_target: Option<u8>,
     pacer: Option<Pacer>,
+    technique: LiveTechnique,
+    focus: Option<FocusCoach>,
     speaker: Option<Speaker>,
 }
 
 impl Coach {
-    fn new(args: &LiveArgs, ctx: Option<&Ctx>) -> Self {
+    fn new(args: &LiveArgs, ctx: Option<&Ctx>, focus: Option<Fault>) -> Self {
         let heart = ctx.and_then(|c| c.heart()).map(|h| h.0);
         let mut targets = args.plan.map(|p| p.targets(heart.as_ref())).unwrap_or_default();
         if let Some(p) = args.plan {
@@ -115,10 +187,15 @@ impl Coach {
             println!("Cues: {}", describe_targets(&targets));
             Pacer::new(targets)
         });
+        if let Some(f) = focus {
+            println!("Focus: {} (\"{}\")", f.label(), f.cue());
+        }
         Self {
             heart,
             drag_target: ctx.and_then(|c| c.profile.drag_target),
             pacer,
+            technique: LiveTechnique::new(),
+            focus: focus.map(FocusCoach::new),
             speaker,
         }
     }
@@ -130,8 +207,13 @@ impl Coach {
         }
     }
 
-    /// Called for every completed stroke.
-    fn stroke(&mut self, r: &StrokeRecord, count: u32) {
+    /// Give a completed stroke its camera view and faults.
+    fn observe(&mut self, r: &mut StrokeRecord) {
+        self.technique.stroke(r);
+    }
+
+    /// React to a completed (observed) stroke.
+    fn react(&mut self, r: &StrokeRecord, count: u32) {
         if count == DRAG_CHECK_STROKE
             && let Some(df) = r.drag_factor
         {
@@ -143,8 +225,13 @@ impl Coach {
                 None => println!("  Drag factor {df} (no target: set one with rowctl profile --drag {df})"),
             }
         }
-        if let Some(cue) = self.pacer.as_mut().and_then(|p| p.stroke(r)) {
-            self.cue(&cue.text());
+        // Technique first: one cue per stroke at most.
+        let technique = self.focus.as_mut().and_then(|f| f.stroke(r));
+        let pacing = self.pacer.as_mut().and_then(|p| p.stroke(r));
+        match (technique, pacing) {
+            (Some(t), _) => self.cue(t.text()),
+            (None, Some(p)) => self.cue(&p.text()),
+            (None, None) => {}
         }
     }
 }
@@ -173,7 +260,8 @@ pub async fn record(args: LiveArgs, out: Option<PathBuf>, note: Option<String>) 
     header.simulated = args.sim;
     header.plan = args.plan.map(|p| p.name().to_owned());
     let writer = FileWriter::create(&path, &header)?;
-    let coach = Coach::new(&args, ctx.as_ref());
+    let focus = choose_focus(&args, ctx.as_ref()).await;
+    let coach = Coach::new(&args, ctx.as_ref(), focus);
     println!("Recording to {} (Ctrl-C to stop)", path.display());
 
     let pool = ctx.as_ref().map(|c| c.pool.clone());
@@ -195,7 +283,8 @@ pub async fn record(args: LiveArgs, out: Option<PathBuf>, note: Option<String>) 
 
 pub async fn watch(args: LiveArgs) -> Result<()> {
     let ctx = open_ctx(&args).await;
-    let coach = Coach::new(&args, ctx.as_ref());
+    let focus = choose_focus(&args, ctx.as_ref()).await;
+    let coach = Coach::new(&args, ctx.as_ref(), focus);
     let pool = ctx.as_ref().map(|c| c.pool.clone());
     run(&args, Clock::start(), None, coach, pool).await.map(|_| ())
 }
@@ -211,7 +300,14 @@ async fn run(
     let (tx, mut rx) = mpsc::channel::<Event>(4096);
     let mut tasks = Vec::new();
     if args.sim {
-        tasks.push(tokio::spawn(sim::run(clock, tx.clone(), sim::SimConfig::default())));
+        let cfg = sim::SimConfig {
+            pose: (args.sim_camera || args.sim_fault.is_some()).then(|| devices::sim_pose::PoseSim {
+                fault: args.sim_fault.map(Into::into),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        tasks.push(tokio::spawn(sim::run(clock, tx.clone(), cfg)));
     } else {
         if !args.no_pm5 {
             let tx = tx.clone();
@@ -274,10 +370,14 @@ async fn run(
                 if let Some(msg) = view.apply(&ev) {
                     println!("{msg}");
                 }
-                if let Some(r) = asm.push(&ev) {
+                if let EventKind::Pose(p) = &ev.kind {
+                    coach.technique.frame(p);
+                }
+                if let Some(mut r) = asm.push(&ev) {
                     view.strokes += 1;
+                    coach.observe(&mut r);
                     println!("{}", record_line(&r, start_us, view.heart.as_ref()));
-                    coach.stroke(&r, view.strokes);
+                    coach.react(&r, view.strokes);
                 }
             }
             _ = ticker.tick() => println!("{}", view.status_line(clock.now_us() - start_us)),

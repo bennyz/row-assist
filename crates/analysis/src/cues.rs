@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 
 use crate::strokes::StrokeRecord;
+use crate::technique::Fault;
 
 /// Acceptable ranges. Each is `(low, high)`, inclusive; a cue fires outside it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -191,6 +192,92 @@ impl Pacer {
     }
 }
 
+/// Technique coaching with one focus per session (DESIGN.md §5.2): speak
+/// when the focus fault shows in most recent strokes, then leave the rower
+/// alone to fix it; praise once it has stayed fixed.
+#[derive(Debug)]
+pub struct FocusCoach {
+    focus: Fault,
+    /// Last judged strokes: did the focus fault show?
+    recent: VecDeque<bool>,
+    last_cue_us: Option<i64>,
+    /// A correction was given and not yet followed by praise.
+    corrected: bool,
+    good_streak: u32,
+}
+
+/// Strokes looked back over, and how many must show the fault.
+pub const FOCUS_WINDOW: usize = 10;
+pub const FOCUS_HITS: usize = 6;
+/// Quiet time after a correction.
+pub const FOCUS_COOLDOWN_S: f64 = 30.0;
+/// Praise after this many strokes with the fault in under 2 of the last 10.
+pub const GOOD_STREAK: u32 = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "cue", rename_all = "snake_case")]
+pub enum TechniqueCue {
+    Fix { fault: Fault },
+    Good,
+}
+
+impl TechniqueCue {
+    pub fn text(&self) -> &'static str {
+        match self {
+            Self::Fix { fault } => fault.cue(),
+            Self::Good => "That's it.",
+        }
+    }
+}
+
+impl FocusCoach {
+    pub fn new(focus: Fault) -> Self {
+        Self {
+            focus,
+            recent: VecDeque::with_capacity(FOCUS_WINDOW),
+            last_cue_us: None,
+            corrected: false,
+            good_streak: 0,
+        }
+    }
+
+    pub fn focus(&self) -> Fault {
+        self.focus
+    }
+
+    /// Feed each completed stroke (with its faults attached).
+    pub fn stroke(&mut self, s: &StrokeRecord) -> Option<TechniqueCue> {
+        // A stroke the camera didn't see can't show a camera fault: skip it.
+        if s.t_next_catch_us.is_none() || (self.focus.needs_camera() && s.pose.is_none()) {
+            return None;
+        }
+        let now = s.t_next_catch_us.unwrap_or(s.t_catch_us);
+        if self.recent.len() == FOCUS_WINDOW {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(s.faults.iter().any(|h| h.fault == self.focus));
+        let hits = self.recent.iter().filter(|&&h| h).count();
+
+        let quiet = self.last_cue_us.is_none_or(|t| (now - t) as f64 / 1e6 >= FOCUS_COOLDOWN_S);
+        if self.recent.len() == FOCUS_WINDOW && hits >= FOCUS_HITS && quiet {
+            self.last_cue_us = Some(now);
+            self.corrected = true;
+            self.good_streak = 0;
+            return Some(TechniqueCue::Fix { fault: self.focus });
+        }
+        if self.corrected {
+            self.good_streak = if hits < 2 { self.good_streak + 1 } else { 0 };
+            if self.good_streak >= GOOD_STREAK {
+                self.corrected = false;
+                self.good_streak = 0;
+                self.last_cue_us = Some(now);
+                return Some(TechniqueCue::Good);
+            }
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +355,60 @@ mod tests {
         assert_eq!(Cue::RateUp { target: 20.0 }.text(), "Rate up. 20.");
         assert_eq!(Cue::HeartHigh { bpm: 162.4 }.text(), "Heart rate 162. Ease off.");
         assert!(Targets::default().is_empty());
+    }
+
+    mod focus {
+        use super::super::*;
+        use crate::session::tests::steady;
+        use crate::technique::{FaultHit, StrokePose};
+
+        /// Strokes with the fault on the ones `bad` picks.
+        fn rowed(n: u32, bad: impl Fn(u32) -> bool) -> Vec<StrokeRecord> {
+            let mut s = steady(n, 3.0, 53.0, |_| 140.0);
+            for r in &mut s {
+                r.pose = Some(StrokePose::default());
+                if bad(r.index) {
+                    r.faults = vec![FaultHit { fault: Fault::EarlyArms, value: 140.0 }];
+                }
+            }
+            s
+        }
+
+        fn cues(strokes: &[StrokeRecord]) -> Vec<(u32, TechniqueCue)> {
+            let mut c = FocusCoach::new(Fault::EarlyArms);
+            strokes.iter().filter_map(|s| c.stroke(s).map(|q| (s.index, q))).collect()
+        }
+
+        #[test]
+        fn quiet_on_clean_strokes_and_on_the_odd_fault() {
+            assert!(cues(&rowed(200, |_| false)).is_empty());
+            assert!(cues(&rowed(200, |i| i % 3 == 0)).is_empty(), "4 in 10 is not enough");
+        }
+
+        #[test]
+        fn corrects_then_waits_then_praises_the_fix() {
+            // Fault on strokes 0–59, fixed from 60 on.
+            let c = cues(&rowed(150, |i| i < 60));
+            let fix = TechniqueCue::Fix { fault: Fault::EarlyArms };
+            assert_eq!(c[0], (9, fix), "once 6 of the first 10 show it");
+            // 30 s (10 strokes at 3 s) between corrections.
+            let fixes: Vec<u32> = c.iter().filter(|(_, q)| *q == fix).map(|(i, _)| *i).collect();
+            assert!(fixes.windows(2).all(|w| w[1] - w[0] >= 10), "{fixes:?}");
+            // Praise once the fix has held: under 2 in 10 for 20 strokes.
+            let (praised_at, good) = *c.last().unwrap();
+            assert_eq!(good, TechniqueCue::Good);
+            assert!((80..=95).contains(&praised_at), "praised at {praised_at}");
+            assert_eq!(c.iter().filter(|(_, q)| *q == TechniqueCue::Good).count(), 1);
+            assert_eq!(fix.text(), "Legs first, arms long");
+        }
+
+        #[test]
+        fn strokes_the_camera_missed_dont_count() {
+            let mut s = rowed(40, |_| true);
+            for r in &mut s {
+                r.pose = None;
+            }
+            assert!(cues(&s).is_empty());
+        }
     }
 }
