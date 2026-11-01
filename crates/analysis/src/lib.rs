@@ -5,6 +5,7 @@ pub mod cues;
 pub mod fixtures;
 pub mod metrics;
 pub mod planner;
+pub mod progress;
 pub mod pose;
 pub mod readiness;
 pub mod reference;

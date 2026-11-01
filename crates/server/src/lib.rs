@@ -27,6 +27,7 @@ use tracing::error;
 pub mod camera;
 pub mod health;
 pub mod live;
+pub mod progress;
 pub use camera::Live;
 
 pub struct Config {
@@ -93,6 +94,7 @@ pub fn router(api: Option<Api>, web_dir: &Path, live: Live) -> Router {
                 .route("/api/sessions", get(list_sessions))
                 .route("/api/sessions/{id}", get(session_detail))
                 .route("/api/health", get(health::get))
+                .route("/api/progress", get(progress::get))
                 .route("/api/health/daily", axum::routing::post(health::post))
                 .with_state(api),
         );
@@ -386,6 +388,9 @@ mod tests {
         assert_eq!(d["strokes"][3]["rate"], Value::Null, "spans a 20 s pause");
         assert_eq!(d["recording"], "/x.rowrec");
 
+        let (status, p) = get(app.clone(), "/api/progress").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(p["weeks"][0]["rows"], 1, "the one saved session");
         let (status, _) = get(app.clone(), "/api/sessions/999").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         let (status, _) = get(app, "/review/1").await;

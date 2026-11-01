@@ -406,8 +406,13 @@ Visual language from `.impeccable.md`: dark, instrument-panel, amber accent, Cha
    force curve against the session mean, with jumps to the most- and least-work strokes; every
    stroke as a table. Amber always means "the selected stroke". Phase 2 adds joint angles and
    stick figures at catch/finish.
-4. **Progress**: watts at 20, EF, load/fatigue/form, fault-rate trends, form under fatigue,
-   benchmarks, readiness, consistency calendar.
+4. **Progress** (built: `/progress`, `analysis::progress`): watts at 20 against the 100 W
+   milestone (app strokes at 19.5–20.5 spm; logbook pieces averaged at 20 spm, shown faint),
+   EF of comparable steady rows (≥ 15 min, 16–22 spm, 43–63 W only: EF climbs with power),
+   fitness/fatigue (42/7-day averages of TRIMP; logbook load estimated from average HR) and
+   form as a separate chart, rows per week against the aim of 3 with the streak, fault rates
+   per camera session, form under fatigue (first vs second half of the last 10 camera
+   sessions), benchmarks (rate-20 tests, 2k pieces).
 
 ---
 
@@ -451,7 +456,7 @@ Each phase ends with something usable on the erg.
 | **1. Effort** | stroke assembler; session persistence; zones, TRIMP, EF, decoupling, watts at 20; drag-factor check; review screen; audio zone cues; reference-row comparison | comeback-ramp sessions are rowed with the app. *Status: built: `rowctl record --plan … --speak`, `analyze`, `sessions`, `profile`, `simulate`, and the review screen (`rowctl serve`). Waiting on the first real comeback-ramp rows.* |
 | **2. Posture** | camera page; framing check; near-side + horizon + scale; sync auto-calibration; joint angles; faults 1–4; one-focus coach; **mirror on the front screen**; deliberate-fault fixtures | the coach flags deliberately rowed faults and stays quiet on clean strokes. *Status: built: camera page (`rowctl record --camera`), setup check, near side, tilt, scale, sync, joint angles, faults 1–4, technique on the review screen, the one-focus coach (live), a kinematic rower in the simulator (`--sim-fault`). the mirror on the front screen. Next: real deliberately-rowed fixtures and threshold tuning, which need rows on the erg.* |
 | **3. Readiness** | Shortcut endpoint; baselines; readiness on setup screen; Karvonen zones from Watch resting HR | a week of Watch data shows up and changes the zones. *Status: built and tested with synthetic data; waiting on the Shortcut (docs/SHORTCUT.md).* |
-| **4. Improvement loop** | planner; PM5 workout programming; progress screen; form under fatigue; benchmarks | the app proposes next session + focus and loads it onto the PM5. *Status: planner + benchmark scheduling built (`rowctl plan`); PM5 programming needs hardware; progress screen not started.* |
+| **4. Improvement loop** | planner; PM5 workout programming; progress screen; form under fatigue; benchmarks | the app proposes next session + focus and loads it onto the PM5. *Status: planner + benchmark scheduling (`rowctl plan`) and the progress screen built; PM5 programming needs hardware.* |
 | **Later** | H10 accelerometer; faults 5–8; front camera view (symmetry); optional video capture for review; Concept2 Logbook API sync (incl. stroke data if present); weekly written summary | — |
 
 ---

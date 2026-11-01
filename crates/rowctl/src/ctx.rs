@@ -7,12 +7,10 @@ use analysis::reference::{self, Piece};
 use analysis::technique::Fault;
 use analysis::zones::{HeartProfile, Source};
 use anyhow::Result;
-use chrono::{DateTime, Local, NaiveDateTime};
 use store::SqlitePool;
+use store::history::{Entry, entries};
 use store::sessions::Profile;
 
-/// A logbook result this close to an app session is the same row, uploaded.
-const SAME_ROW_MINUTES: i64 = 15;
 
 pub struct Ctx {
     pub db_path: PathBuf,
@@ -72,57 +70,38 @@ impl Ctx {
     /// earlier app sessions, minus the session itself (`exclude_us`, its
     /// first catch) and logbook uploads of rows the app recorded.
     pub async fn history(&self, exclude_us: i64) -> Result<Vec<Piece>> {
-        let sessions = store::sessions::list_sessions(&self.pool).await?;
-        let app_starts: Vec<NaiveDateTime> = sessions
-            .iter()
-            .filter(|s| !s.meta.simulated)
-            .map(|s| s.summary.started_at_us)
-            .chain([exclude_us])
-            .filter_map(local)
-            .collect();
-
         let mut pieces = Vec::new();
-        for r in store::db::list_concept2(&self.pool).await? {
-            let interval = r.rest_time_s.is_some_and(|s| s > 0.0);
-            let same_row = app_starts
-                .iter()
-                .any(|t| (r.started_at - *t).num_minutes().abs() <= SAME_ROW_MINUTES);
-            if !r.machine.eq_ignore_ascii_case("rowerg") || interval || same_row {
-                continue;
-            }
-            if let (Some(watts), Some(hr), Some(spm)) = (r.avg_watts, r.avg_hr, r.stroke_rate) {
-                pieces.push(Piece {
-                    label: format!("{} logbook", r.started_at.date()),
-                    minutes: r.work_time_s / 60.0,
-                    watts,
-                    spm,
-                    hr: hr as f64,
-                });
-            }
-        }
-        for s in sessions {
-            let w = &s.summary.whole;
-            if s.meta.simulated || s.summary.started_at_us == exclude_us {
-                continue;
-            }
-            if let (Some(watts), Some(hr), Some(spm)) = (w.watts, w.hr, w.spm) {
-                pieces.push(Piece {
-                    label: format!("{} app", local(s.summary.started_at_us).map(|t| t.date().to_string()).unwrap_or_default()),
-                    minutes: w.seconds / 60.0,
-                    watts,
-                    spm,
-                    hr,
-                });
-            }
+        for e in entries(&self.pool, Some(exclude_us)).await? {
+            let label = format!("{} {}", e.start().date(), if matches!(e, Entry::App(_)) { "app" } else { "logbook" });
+            let piece = match e {
+                Entry::Logbook(r) if r.rest_time_s.is_none_or(|s| s <= 0.0) => {
+                    r.avg_watts.zip(r.avg_hr).zip(r.stroke_rate).map(|((watts, hr), spm)| Piece {
+                        label,
+                        minutes: r.work_time_s / 60.0,
+                        watts,
+                        spm,
+                        hr: hr as f64,
+                    })
+                }
+                Entry::Logbook(_) => None,
+                Entry::App(s) => {
+                    let w = &s.summary.whole;
+                    w.watts.zip(w.hr).zip(w.spm).map(|((watts, hr), spm)| Piece {
+                        label,
+                        minutes: w.seconds / 60.0,
+                        watts,
+                        spm,
+                        hr,
+                    })
+                }
+            };
+            pieces.extend(piece);
         }
         Ok(pieces)
     }
 }
 
-/// Unix microseconds to local wall time.
-pub fn local(us: i64) -> Option<NaiveDateTime> {
-    DateTime::from_timestamp_micros(us).map(|t| t.with_timezone(&Local).naive_local())
-}
+pub use store::history::local;
 
 impl Ctx {
     /// The fault with the highest rate (≥ 10%) over the last 3 real sessions;
@@ -146,40 +125,35 @@ impl Ctx {
             .filter(|&(_, r)| r >= FOCUS_MIN_RATE)
     }
 
-    /// Every row so far for the planner: logbook and app sessions, without
-    /// logbook uploads of rows the app recorded, reference rows with their verdict.
+    /// Every row so far for the planner, reference rows with their verdict.
     pub async fn rows(&self) -> Result<Vec<Row>> {
-        let sessions = store::sessions::list_sessions(&self.pool).await?;
-        let real: Vec<_> = sessions.iter().filter(|s| !s.meta.simulated).collect();
-        let app_starts: Vec<NaiveDateTime> = real.iter().filter_map(|s| local(s.summary.started_at_us)).collect();
         let mut rows = Vec::new();
-        for r in store::db::list_concept2(&self.pool).await? {
-            let same_row = app_starts.iter().any(|t| (r.started_at - *t).num_minutes().abs() <= SAME_ROW_MINUTES);
-            if !same_row && r.machine.eq_ignore_ascii_case("rowerg") {
-                rows.push(Row {
-                    day: store::health::day_number(r.started_at.date()),
+        for e in entries(&self.pool, None).await? {
+            let day = e.day();
+            rows.push(match e {
+                Entry::Logbook(r) => Row {
+                    day,
                     minutes: r.work_time_s / 60.0,
                     plan: None,
                     ramp: None,
-                });
-            }
-        }
-        for s in real {
-            let Some(start) = local(s.summary.started_at_us) else { continue };
-            let ramp = if s.meta.plan.as_deref() == Some("reference") {
-                let history = self.history(s.summary.started_at_us).await?;
-                match reference::compare(&s.summary.whole, &history) {
-                    reference::Outcome::Compared(c) => Some(c.ramp),
-                    _ => None,
+                },
+                Entry::App(s) => {
+                    let ramp = if s.meta.plan.as_deref() == Some("reference") {
+                        let history = self.history(s.summary.started_at_us).await?;
+                        match reference::compare(&s.summary.whole, &history) {
+                            reference::Outcome::Compared(c) => Some(c.ramp),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    Row {
+                        day,
+                        minutes: s.summary.whole.seconds / 60.0,
+                        plan: s.meta.plan.clone(),
+                        ramp,
+                    }
                 }
-            } else {
-                None
-            };
-            rows.push(Row {
-                day: store::health::day_number(start.date()),
-                minutes: s.summary.whole.seconds / 60.0,
-                plan: s.meta.plan.clone(),
-                ramp,
             });
         }
         Ok(rows)

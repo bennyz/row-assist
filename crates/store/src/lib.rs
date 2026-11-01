@@ -3,6 +3,7 @@
 pub mod concept2;
 pub mod db;
 pub mod health;
+pub mod history;
 pub mod paths;
 pub mod sessions;
 

@@ -5,6 +5,7 @@
   import CameraPage from './lib/CameraPage.svelte';
   import MirrorPage from './lib/MirrorPage.svelte';
   import Readiness from './lib/Readiness.svelte';
+  import ProgressPage from './lib/ProgressPage.svelte';
 
   let sessions = $state([]);
   let current = $state(null);
@@ -14,6 +15,7 @@
   const onCamera = $derived(path.startsWith('/camera'));
   // The front screen gets the whole window.
   const onMirror = $derived(path.startsWith('/mirror'));
+  const onProgress = $derived(path.startsWith('/progress'));
 
   const fromPath = () => {
     const m = location.pathname.match(/^\/sessions\/(\d+)/);
@@ -53,6 +55,15 @@
     <Readiness />
     <a
       class="nav"
+      class:here={onProgress}
+      href="/progress"
+      onclick={(e) => {
+        e.preventDefault();
+        go('/progress');
+      }}>Progress</a
+    >
+    <a
+      class="nav"
       class:here={onCamera}
       href="/camera"
       onclick={(e) => {
@@ -62,12 +73,14 @@
     >
     <a class="nav" href="/mirror" target="_blank" rel="noopener">Mirror (front screen) ↗</a>
     {#if sessions.length}
-      <SessionList {sessions} current={onCamera ? null : current} onselect={select} />
+      <SessionList {sessions} current={onCamera || onProgress ? null : current} onselect={select} />
     {/if}
   </aside>
   <main>
     {#if onCamera}
       <CameraPage />
+    {:else if onProgress}
+      <ProgressPage />
     {:else if error}
       <p class="error">Couldn't reach the server: {error}</p>
     {:else if current != null}
