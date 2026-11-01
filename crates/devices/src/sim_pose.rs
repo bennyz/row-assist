@@ -55,6 +55,8 @@ const ANKLE: (f64, f64) = (980.0, 170.0);
 const HIP_Y: f64 = 210.0;
 /// Trunk lean at catch (forward) and finish (back), degrees.
 const LEAN: f64 = 25.0;
+/// Height the handle travels at with straight arms (the chain's line).
+const HANDLE_Y: f64 = 230.0;
 
 /// Where the rower is in the stroke.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -82,15 +84,20 @@ fn finish_hip_x() -> f64 {
     ANKLE.0 - (reach * reach - (ANKLE.1 - HIP_Y).powi(2)).sqrt()
 }
 
-/// Knee from hip and ankle (two-link IK), on the upper side.
-fn knee(hip: (f64, f64)) -> (f64, f64) {
-    let (dx, dy) = (ANKLE.0 - hip.0, ANKLE.1 - hip.1);
-    let d = dx.hypot(dy).min(THIGH + SHIN - 1e-6);
-    let a = (THIGH * THIGH - SHIN * SHIN + d * d) / (2.0 * d);
-    let h = (THIGH * THIGH - a * a).max(0.0).sqrt();
-    let (mx, my) = (hip.0 + a * dx / d, hip.1 + a * dy / d);
-    let (k1, k2) = ((mx - h * dy / d, my + h * dx / d), (mx + h * dy / d, my - h * dx / d));
-    if k1.1 >= k2.1 { k1 } else { k2 }
+/// The middle joint of a two-link chain from `base` to `tip` (lengths `l1`,
+/// `l2`): above the base–tip line if `up`, else below.
+fn middle(base: (f64, f64), tip: (f64, f64), l1: f64, l2: f64, up: bool) -> (f64, f64) {
+    let (dx, dy) = (tip.0 - base.0, tip.1 - base.1);
+    let d = dx.hypot(dy).clamp(1e-6, l1 + l2 - 1e-6);
+    let a = (l1 * l1 - l2 * l2 + d * d) / (2.0 * d);
+    let h = (l1 * l1 - a * a).max(0.0).sqrt();
+    let (mx, my) = (base.0 + a * dx / d, base.1 + a * dy / d);
+    let (p1, p2) = ((mx - h * dy / d, my + h * dx / d), (mx + h * dy / d, my - h * dx / d));
+    if (p1.1 >= p2.1) == up { p1 } else { p2 }
+}
+
+fn lerp(a: (f64, f64), b: (f64, f64), t: f64) -> (f64, f64) {
+    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
 }
 
 /// Joint positions for `POSE_JOINTS` (ear … toe), pixels, y down.
@@ -117,17 +124,24 @@ pub fn figure(phase: Phase, fault: Option<SimFault>) -> [(f64, f64); 9] {
     };
     let catch_x = catch_hip_x() - if fault == Some(ShortCompression) { 60.0 } else { 0.0 };
     let hip = (catch_x + (finish_hip_x() - catch_x) * legs, HIP_Y);
-    let kn = knee(hip);
+    let kn = middle(hip, ANKLE, THIGH, SHIN, true);
     let trunk = (LEAN + lean_extra - 2.0 * LEAN * body).to_radians();
     let shoulder = (hip.0 + TORSO * trunk.sin(), hip.1 + TORSO * trunk.cos());
     let ear = (shoulder.0 + NECK * trunk.sin(), shoulder.1 + NECK * trunk.cos());
-    // Arm angles from straight down, forward positive: hands near the feet at
-    // the catch, elbows past the body at the finish.
-    let upper = (20.0 - 15.0 * body - 35.0 * arms).to_radians();
-    let elbow_deg = 180.0 - 105.0 * arms;
-    let fore = upper + (180.0 - elbow_deg).to_radians();
-    let elbow = (shoulder.0 + UPPER_ARM * upper.sin(), shoulder.1 - UPPER_ARM * upper.cos());
-    let wrist = (elbow.0 + FOREARM * fore.sin(), elbow.1 - FOREARM * fore.cos());
+    // Hands follow the handle: straight arms reach along the chain's line;
+    // drawing in brings them to the lower ribs. The chain pulls the handle
+    // toward the flywheel, so it only ever moves forward in the recovery.
+    let arm = UPPER_ARM + FOREARM - 1.0;
+    let drop = shoulder.1 - HANDLE_Y;
+    let straight = if drop.abs() < arm {
+        (shoulder.0 + (arm * arm - drop * drop).sqrt(), HANDLE_Y)
+    } else {
+        (shoulder.0, shoulder.1 - arm)
+    };
+    let (ts, tc) = trunk.sin_cos();
+    let ribs = (shoulder.0 - 0.45 * TORSO * ts + 60.0 * tc, shoulder.1 - 0.45 * TORSO * tc - 60.0 * ts);
+    let wrist = lerp(straight, ribs, arms);
+    let elbow = middle(shoulder, wrist, UPPER_ARM, FOREARM, false);
     let heel = (ANKLE.0 - 15.0, ANKLE.1 - 20.0);
     let toe = (ANKLE.0 + 70.0, ANKLE.1 - 25.0);
     [ear, shoulder, elbow, wrist, hip, kn, ANKLE, heel, toe].map(|(x, y)| (x, HEIGHT as f64 - y))
@@ -197,6 +211,16 @@ mod tests {
         for (a, b) in back.iter().zip(&c) {
             assert!(dist(*a, *b) < 1e-6);
         }
+    }
+
+    #[test]
+    fn the_handle_goes_back_in_the_drive_and_forward_in_the_recovery() {
+        let wrist_x = |phase| figure(phase, None)[WRIST].0;
+        let steps = |f: fn(f64) -> Phase| (0..=50).map(move |i| wrist_x(f(i as f64 / 50.0))).collect::<Vec<_>>();
+        let drive = steps(Phase::Drive);
+        let recovery = steps(Phase::Recovery);
+        assert!(drive.windows(2).all(|w| w[1] <= w[0] + 1e-9), "drive: {drive:?}");
+        assert!(recovery.windows(2).all(|w| w[1] >= w[0] - 1e-9), "recovery: {recovery:?}");
     }
 
     #[test]

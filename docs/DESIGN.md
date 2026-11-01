@@ -259,6 +259,15 @@ The front screen shows the rower's own position, drawn from landmarks (no video 
   warm-up and the start of a focus block; audio only during steady pieces; regular
   no-feedback blocks to check the fix stuck. The planner schedules these.
 
+**Built:** `/mirror`, fed by `/ws/live` from `rowctl record --camera` (any number of screens;
+`--listen 0.0.0.0:8080` for the Lenovo in front). The live figure is anchored at the ankle so the
+body slides as it does on the erg; guides are a shin-vertical line and the catch (15–30° forward)
+and finish (5–30° back) body-angle wedges, sent by the server
+(`analysis::technique::{CATCH,FINISH}_TRUNK_GUIDE`). Beside it, the last stroke frozen at catch
+and finish over the median of the last 20 strokes; big rate, watts and HR + zone; the coach's
+cue as a banner; a "Numbers only" switch for the no-feedback blocks. Only figures travel, never
+video.
+
 **Validation:** each fault detector ships with a recorded session where the fault is rowed
 *on purpose* (e.g., 20 strokes bending the arms early). The detector must flag those strokes
 and stay quiet on clean ones.
@@ -407,7 +416,7 @@ Each phase ends with something usable on the erg.
 |---|---|---|
 | **0. Foundations** | workspace; event model; PM5 driver port + drag factor + **force curve spike**; H10 HR + RR; recorder, replay, dump; Concept2 CSV importer | a real row is recorded, replayed, and its force curves dumped; the CSV is in SQLite. *Status: code done and verified with the simulator; CSV imported. Waiting on hardware: `pm5-probe`, then a real `record`.* |
 | **1. Effort** | stroke assembler; session persistence; zones, TRIMP, EF, decoupling, watts at 20; drag-factor check; review screen; audio zone cues; reference-row comparison | comeback-ramp sessions are rowed with the app. *Status: built: `rowctl record --plan … --speak`, `analyze`, `sessions`, `profile`, `simulate`, and the review screen (`rowctl serve`). Waiting on the first real comeback-ramp rows.* |
-| **2. Posture** | camera page; framing check; near-side + horizon + scale; sync auto-calibration; joint angles; faults 1–4; one-focus coach; **mirror on the front screen**; deliberate-fault fixtures | the coach flags deliberately rowed faults and stays quiet on clean strokes. *Status: built: camera page (`rowctl record --camera`), setup check, near side, tilt, scale, sync, joint angles, faults 1–4, technique on the review screen, the one-focus coach (live), a kinematic rower in the simulator (`--sim-fault`). Next: the mirror, real fixtures and threshold tuning.* |
+| **2. Posture** | camera page; framing check; near-side + horizon + scale; sync auto-calibration; joint angles; faults 1–4; one-focus coach; **mirror on the front screen**; deliberate-fault fixtures | the coach flags deliberately rowed faults and stays quiet on clean strokes. *Status: built: camera page (`rowctl record --camera`), setup check, near side, tilt, scale, sync, joint angles, faults 1–4, technique on the review screen, the one-focus coach (live), a kinematic rower in the simulator (`--sim-fault`). the mirror on the front screen. Next: real deliberately-rowed fixtures and threshold tuning, which need rows on the erg.* |
 | **3. Readiness** | Shortcut endpoint; baselines; readiness on setup screen; Karvonen zones from Watch resting HR | a week of Watch data shows up and changes the zones |
 | **4. Improvement loop** | planner; PM5 workout programming; progress screen; form under fatigue; benchmarks | the app proposes next session + focus and loads it onto the PM5 |
 | **Later** | H10 accelerometer; faults 5–8; front camera view (symmetry); optional video capture for review; Concept2 Logbook API sync (incl. stroke data if present); weekly written summary | — |

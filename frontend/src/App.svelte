@@ -3,6 +3,7 @@
   import SessionList from './lib/SessionList.svelte';
   import SessionView from './lib/SessionView.svelte';
   import CameraPage from './lib/CameraPage.svelte';
+  import MirrorPage from './lib/MirrorPage.svelte';
 
   let sessions = $state([]);
   let current = $state(null);
@@ -10,6 +11,8 @@
   let loaded = $state(false);
   let path = $state(location.pathname);
   const onCamera = $derived(path.startsWith('/camera'));
+  // The front screen gets the whole window.
+  const onMirror = $derived(path.startsWith('/mirror'));
 
   const fromPath = () => {
     const m = location.pathname.match(/^\/sessions\/(\d+)/);
@@ -40,6 +43,9 @@
   });
 </script>
 
+{#if onMirror}
+  <MirrorPage />
+{:else}
 <div class="layout">
   <aside>
     <div class="brand">Row Assist</div>
@@ -52,6 +58,7 @@
         go('/camera');
       }}>Camera setup</a
     >
+    <a class="nav" href="/mirror" target="_blank" rel="noopener">Mirror (front screen) ↗</a>
     {#if sessions.length}
       <SessionList {sessions} current={onCamera ? null : current} onselect={select} />
     {/if}
@@ -75,6 +82,8 @@
     {/if}
   </main>
 </div>
+{/if}
+
 
 <style>
   .layout {
@@ -96,7 +105,7 @@
   }
   .nav {
     display: block;
-    margin: 0 0 1.75rem;
+    margin: 0 0 0.4rem;
     padding: 0.35rem 0.75rem;
     border-left: 2px solid transparent;
     color: var(--ink-2);
@@ -105,6 +114,9 @@
   }
   .nav:hover {
     color: var(--ink);
+  }
+  .nav:last-of-type {
+    margin-bottom: 1.75rem;
   }
   .nav.here {
     border-left-color: var(--accent);

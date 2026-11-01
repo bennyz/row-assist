@@ -29,6 +29,10 @@ pub const EARLY_ARMS_ELBOW_DEG: f64 = 160.0;
 pub const LEGS_DOWN_KNEE_DEG: f64 = 150.0;
 pub const RUSHED_RATIO: f64 = 1.5;
 pub const RUSHED_MAX_SPM: f64 = 24.0;
+/// Body angle the mirror's guides show (degrees, + toward the feet): forward
+/// at the catch, back at the finish (DESIGN.md §5.1, faults 5 and 6).
+pub const CATCH_TRUNK_GUIDE: (f64, f64) = (15.0, 30.0);
+pub const FINISH_TRUNK_GUIDE: (f64, f64) = (-30.0, -5.0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -200,8 +204,8 @@ pub fn sync_offset(strokes: &[StrokeRecord], frames: &[Pose], view: &CameraView)
     Some(offsets[offsets.len() / 2])
 }
 
-/// Joints relative to the hip, in thigh lengths, x toward the feet.
-fn figure(f: &Pose, view: &CameraView) -> Figure {
+/// A frame's near-side body relative to the hip, in thigh lengths, x toward the feet.
+pub fn figure(f: &Pose, view: &CameraView) -> Figure {
     let Some(hip) = at(f, view, Joint::Hip) else {
         return Vec::new();
     };
@@ -300,7 +304,15 @@ pub struct LiveTechnique {
     frames: VecDeque<Pose>,
     candidates: Vec<f64>,
     strokes: usize,
+    view: Option<CameraView>,
+    /// Recent strokes' poses, for the typical figure.
+    recent: VecDeque<StrokePose>,
 }
+
+/// Strokes the live typical figure is the median of.
+const LIVE_TYPICAL: usize = 20;
+/// Frames needed before the first camera view (side, scale) is worked out.
+const FIRST_VIEW_FRAMES: usize = 30;
 
 /// Frames kept: several strokes, enough for side, tilt and scale.
 const LIVE_BUFFER_US: i64 = 15_000_000;
@@ -321,6 +333,29 @@ impl LiveTechnique {
         while self.frames.front().is_some_and(|f| newest - f.captured_us > LIVE_BUFFER_US) {
             self.frames.pop_front();
         }
+        // Before the first stroke, a view from the frames alone, for the mirror.
+        if self.view.is_none() && self.frames.len() >= FIRST_VIEW_FRAMES {
+            self.view = camera_view(self.frames.make_contiguous());
+        }
+    }
+
+    /// A frame's body as the mirror draws it, once the camera view is known.
+    pub fn figure(&self, pose: &Pose) -> Option<Figure> {
+        let v = self.view.as_ref()?;
+        has_pose(pose).then(|| figure(pose, v))
+    }
+
+    /// Median catch and finish over the last strokes the camera saw.
+    pub fn typical(&self) -> (Figure, Figure) {
+        let strokes: Vec<StrokeRecord> = self
+            .recent
+            .iter()
+            .map(|p| StrokeRecord {
+                pose: Some(p.clone()),
+                ..StrokeRecord::empty()
+            })
+            .collect();
+        typical_figures(&strokes)
     }
 
     /// The offset so far: median of the strokes calibrated on.
@@ -349,11 +384,17 @@ impl LiveTechnique {
         self.strokes += 1;
         let offset_ms = self.offset_ms();
         let frames = self.frames.make_contiguous();
-        s.pose = view.and_then(|mut v| {
-            v.offset_ms = offset_ms;
-            stroke_pose(s, frames, &v)
-        });
+        if let Some(v) = view {
+            self.view = Some(CameraView { offset_ms, ..v });
+        }
+        s.pose = self.view.as_ref().and_then(|v| stroke_pose(s, frames, v));
         s.faults = faults(s, s.pose.as_ref());
+        if let Some(p) = &s.pose {
+            if self.recent.len() == LIVE_TYPICAL {
+                self.recent.pop_front();
+            }
+            self.recent.push_back(p.clone());
+        }
     }
 }
 
@@ -475,6 +516,10 @@ mod tests {
         let p = strokes[10].pose.as_ref().unwrap();
         assert!(p.catch.shin.unwrap().abs() < 3.0, "vertical shins: {:?}", p.catch.shin);
         assert!(p.catch.trunk.unwrap() > 15.0 && p.finish.trunk.unwrap() < -15.0);
+        // Finish: hands drawn in to the ribs, legs flat.
+        assert!(p.finish.elbow.unwrap() < 100.0, "finish elbow {:?}", p.finish.elbow);
+        assert!(p.catch.elbow.unwrap() > 170.0, "catch elbow {:?}", p.catch.elbow);
+        assert!(p.finish.knee.unwrap() > 165.0, "finish knee {:?}", p.finish.knee);
         // Figures: hip at the origin, the knee over the ankle at the catch.
         let f = &p.catch_figure;
         assert_eq!(f[4], Some([0.0, 0.0]));

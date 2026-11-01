@@ -25,6 +25,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tracing::error;
 
 pub mod camera;
+pub mod live;
 pub use camera::Live;
 
 pub struct Config {
@@ -66,6 +67,7 @@ pub async fn listen(addr: SocketAddr, app: Router) -> Result<(SocketAddr, tokio:
 pub fn router(pool: Option<SqlitePool>, web_dir: &Path, live: Live) -> Router {
     let mut app = Router::new()
         .route("/ws/camera", get(camera::upgrade))
+        .route("/ws/live", get(live::upgrade))
         .with_state(live);
     if let Some(pool) = pool {
         app = app.merge(
@@ -415,6 +417,39 @@ mod tests {
             let far: Vec<[f32; 3]> = near.iter().map(|&[x, y, _]| [x + 0.008, y, 0.6]).collect();
             let points = [near, far].concat();
             serde_json::json!({"t": t_us, "w": 1280, "h": 720, "p": points}).to_string()
+        }
+
+        #[tokio::test]
+        async fn every_screen_gets_the_live_messages() {
+            let dir = std::env::temp_dir().join(format!("row-assist-live-{}", std::process::id()));
+            let (tx, _rx) = mpsc::channel(16);
+            let hub = crate::live::channel();
+            let app = router(None, &dir, Live::into_session(Clock::start(), tx).with_broadcast(hub.clone()));
+            let (addr, server) = listen("127.0.0.1:0".parse().unwrap(), app).await.unwrap();
+
+            let (mut a, _) = connect_async(format!("ws://{addr}/ws/live")).await.unwrap();
+            let (mut b, _) = connect_async(format!("ws://{addr}/ws/live")).await.unwrap();
+            for ws in [&mut a, &mut b] {
+                let hello = next_json(ws).await;
+                assert_eq!((hello["type"].as_str(), hello["live"].as_bool()), (Some("hello"), Some(true)));
+                assert_eq!(hello["catch_trunk"][0], 15.0);
+            }
+            crate::live::publish(&hub, &crate::live::LiveMsg::Cue { text: "Legs first, arms long" });
+            for ws in [&mut a, &mut b] {
+                let m = next_json(ws).await;
+                assert_eq!((m["type"].as_str(), m["text"].as_str()), (Some("cue"), Some("Legs first, arms long")));
+            }
+            server.abort();
+        }
+
+        #[tokio::test]
+        async fn without_a_session_screens_are_told_so() {
+            let dir = std::env::temp_dir().join(format!("row-assist-nolive-{}", std::process::id()));
+            let app = router(None, &dir, Live::setup_only(Clock::start()));
+            let (addr, server) = listen("127.0.0.1:0".parse().unwrap(), app).await.unwrap();
+            let (mut ws, _) = connect_async(format!("ws://{addr}/ws/live")).await.unwrap();
+            assert_eq!(next_json(&mut ws).await["live"], false);
+            server.abort();
         }
 
         #[tokio::test]

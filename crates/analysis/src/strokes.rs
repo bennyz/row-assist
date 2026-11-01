@@ -177,6 +177,28 @@ pub struct StrokeRecord {
 }
 
 impl StrokeRecord {
+    /// A record with nothing measured, for building one field by field.
+    pub fn empty() -> Self {
+        Self {
+            index: 0,
+            t_catch_us: 0,
+            t_finish_us: None,
+            t_next_catch_us: None,
+            drive_ms: None,
+            recovery_ms: None,
+            ratio: None,
+            watts: None,
+            spm: None,
+            distance_m: None,
+            drag_factor: None,
+            hr_bpm: None,
+            peak_n: None,
+            force_n: Vec::new(),
+            pose: None,
+            faults: Vec::new(),
+        }
+    }
+
     /// Catch to next catch, seconds.
     pub fn cycle_s(&self) -> Option<f64> {
         Some((self.t_next_catch_us? - self.t_catch_us) as f64 / 1e6)

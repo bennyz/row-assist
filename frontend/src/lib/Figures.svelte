@@ -5,9 +5,9 @@
   import { BONES } from './pose.js';
   import { fixed } from './format.js';
 
-  let { stroke, typicalCatch = [], typicalFinish = [] } = $props();
+  let { stroke, typicalCatch = [], typicalFinish = [], height = 200 } = $props();
 
-  const H = 200;
+  const H = $derived(height);
   const PAD = 0.25;
 
   const pose = $derived(stroke?.pose);

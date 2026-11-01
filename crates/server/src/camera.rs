@@ -27,6 +27,7 @@ pub struct Live {
     clock: Clock,
     tx: Option<mpsc::Sender<Event>>,
     busy: Arc<AtomicBool>,
+    broadcast: Option<crate::live::LiveSender>,
 }
 
 impl Live {
@@ -36,6 +37,7 @@ impl Live {
             clock,
             tx: None,
             busy: Arc::default(),
+            broadcast: None,
         }
     }
 
@@ -45,7 +47,20 @@ impl Live {
             clock,
             tx: Some(tx),
             busy: Arc::default(),
+            broadcast: None,
         }
+    }
+
+    /// Screens on `/ws/live` get what's published on `tx`.
+    pub fn with_broadcast(self, tx: crate::live::LiveSender) -> Self {
+        Self {
+            broadcast: Some(tx),
+            ..self
+        }
+    }
+
+    pub fn broadcast(&self) -> Option<&crate::live::LiveSender> {
+        self.broadcast.as_ref()
     }
 }
 

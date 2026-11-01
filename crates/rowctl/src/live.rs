@@ -19,6 +19,7 @@ use crate::plan::{Plan, describe_targets, parse_rate, parse_watts};
 use crate::render::{clock, record_line};
 use crate::review;
 use crate::simulate::FaultArg;
+use server::live::{self, LiveMsg, LiveSender, StrokeMsg};
 use crate::speak::Speaker;
 
 /// The drag factor is checked once it has settled, after this many strokes.
@@ -64,7 +65,8 @@ pub struct LiveArgs {
     /// Database [default: <data>/row-assist.db]
     #[arg(long)]
     db: Option<PathBuf>,
-    /// Serve the camera page and record its pose landmarks with the session
+    /// Serve the camera page (its pose landmarks are recorded with the
+    /// session) and the mirror for a front screen
     #[arg(long)]
     camera: bool,
     /// Address for the camera page (with --camera)
@@ -148,6 +150,8 @@ struct Coach {
     technique: LiveTechnique,
     focus: Option<FocusCoach>,
     speaker: Option<Speaker>,
+    /// Screens following the session (the mirror), when serving.
+    screens: Option<LiveSender>,
 }
 
 impl Coach {
@@ -197,6 +201,7 @@ impl Coach {
             technique: LiveTechnique::new(),
             focus: focus.map(FocusCoach::new),
             speaker,
+            screens: None,
         }
     }
 
@@ -204,6 +209,49 @@ impl Coach {
         println!("  » {text}");
         if let Some(s) = &self.speaker {
             s.say(text);
+        }
+        if let Some(hub) = &self.screens {
+            live::publish(hub, &LiveMsg::Cue { text });
+        }
+    }
+
+    /// A camera frame: buffer it, and show it on the screens.
+    fn pose(&mut self, p: &model::Pose) {
+        self.technique.frame(p);
+        if let Some(hub) = &self.screens
+            && let Some(joints) = self.technique.figure(p)
+        {
+            live::publish(hub, &LiveMsg::Figure { joints: &joints });
+        }
+    }
+
+    fn publish_stroke(&self, r: &StrokeRecord) {
+        let Some(hub) = &self.screens else { return };
+        let (typical_catch, typical_finish) = self.technique.typical();
+        let pose = r.pose.as_ref();
+        live::publish(
+            hub,
+            &LiveMsg::Stroke(Box::new(StrokeMsg {
+                index: r.index,
+                watts: r.watts,
+                rate: r.rate(),
+                hr: r.hr_bpm,
+                zone: r.hr_bpm.zip(self.heart.as_ref()).map(|(b, h)| h.zone(b)),
+                faults: r.faults.iter().map(|h| h.fault).collect(),
+                catch: pose.map(|p| &p.catch_figure),
+                finish: pose.map(|p| &p.finish_figure),
+                catch_angles: pose.map(|p| p.catch),
+                finish_angles: pose.map(|p| p.finish),
+                typical_catch: &typical_catch,
+                typical_finish: &typical_finish,
+            })),
+        );
+    }
+
+    fn publish_focus(&self) {
+        if let Some(hub) = &self.screens {
+            let fault = self.focus.as_ref().map(|f| f.focus());
+            live::publish(hub, &LiveMsg::Focus { fault, cue: fault.map(|f| f.cue()) });
         }
     }
 
@@ -323,12 +371,21 @@ async fn run(
             tasks.push(tokio::spawn(h10::run(clock, tx.clone(), cfg)));
         }
     }
-    // The camera page's frames join the same stream as the devices'.
+    // The camera page's frames join the same stream as the devices'; the
+    // mirror follows the session on /ws/live.
     let camera = if args.camera {
-        let app = server::router(pool, &crate::default_web_dir(), server::Live::into_session(clock, tx.clone()));
+        let hub = live::channel();
+        let session = server::Live::into_session(clock, tx.clone()).with_broadcast(hub.clone());
+        let app = server::router(pool, &crate::default_web_dir(), session);
         match server::listen(args.listen, app).await {
             Ok((addr, task)) => {
                 println!("Camera page: http://{addr}/camera (open it on this machine: browsers only allow the camera on localhost)");
+                if addr.ip().is_loopback() {
+                    println!("Mirror: http://{addr}/mirror (for a screen on another machine, use --listen 0.0.0.0:{})", addr.port());
+                } else {
+                    println!("Mirror: http://<this machine's address>:{}/mirror", addr.port());
+                }
+                coach.screens = Some(hub);
                 Some(task)
             }
             Err(e) => {
@@ -371,16 +428,20 @@ async fn run(
                     println!("{msg}");
                 }
                 if let EventKind::Pose(p) = &ev.kind {
-                    coach.technique.frame(p);
+                    coach.pose(p);
                 }
                 if let Some(mut r) = asm.push(&ev) {
                     view.strokes += 1;
                     coach.observe(&mut r);
                     println!("{}", record_line(&r, start_us, view.heart.as_ref()));
+                    coach.publish_stroke(&r);
                     coach.react(&r, view.strokes);
                 }
             }
-            _ = ticker.tick() => println!("{}", view.status_line(clock.now_us() - start_us)),
+            _ = ticker.tick() => {
+                println!("{}", view.status_line(clock.now_us() - start_us));
+                coach.publish_focus();
+            }
             _ = &mut ctrl_c => break,
             _ = &mut deadline => break,
         }
