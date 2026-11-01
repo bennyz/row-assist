@@ -17,7 +17,7 @@ pub fn local(us: i64) -> Option<NaiveDateTime> {
 
 #[derive(Debug, Clone)]
 pub enum Entry {
-    Logbook(C2Result),
+    Logbook(Box<C2Result>),
     App(Box<SessionRow>),
 }
 
@@ -55,7 +55,7 @@ pub async fn entries(pool: &SqlitePool, except: Option<i64>) -> Result<Vec<Entry
         .into_iter()
         .filter(|r| r.machine.eq_ignore_ascii_case("rowerg"))
         .filter(|r| !app_starts.iter().any(|t| (r.started_at - *t).num_minutes().abs() <= SAME_ROW_MINUTES))
-        .map(Entry::Logbook)
+        .map(|r| Entry::Logbook(Box::new(r)))
         .collect();
     out.extend(
         sessions
