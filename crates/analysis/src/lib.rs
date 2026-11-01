@@ -4,6 +4,7 @@
 pub mod cues;
 pub mod metrics;
 pub mod pose;
+pub mod readiness;
 pub mod reference;
 pub mod session;
 pub mod strokes;

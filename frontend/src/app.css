@@ -10,7 +10,10 @@
   --accent: #e7a13c;
   --accent-wash: rgb(231 161 60 / 0.1);
   --mean: #6e7c88;
-  /* Status only (never a data series): 6:1 on --surface. */
+  /* Status only (never a data series), always with a mark and a label.
+     Kept clear of --accent so "amber readiness" never reads as "selected". */
+  --ok: #7cc49a;
+  --warn: #d8c75e;
   --bad: #e2725b;
   /* Heart-rate zones Z0–Z5: one hue, monotone lightness (ordinal). */
   --z0: #7a4400;

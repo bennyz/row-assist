@@ -25,6 +25,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tracing::error;
 
 pub mod camera;
+pub mod health;
 pub mod live;
 pub use camera::Live;
 
@@ -33,12 +34,29 @@ pub struct Config {
     pub db: PathBuf,
     /// The built frontend (`frontend/dist`).
     pub web_dir: PathBuf,
+    /// Accept Watch data posted with this token.
+    pub token: Option<String>,
+}
+
+/// What the JSON API needs.
+#[derive(Clone)]
+pub struct Api {
+    pub pool: SqlitePool,
+    /// Posting Watch data needs it; `None` turns posting off.
+    pub token: Option<String>,
+}
+
+impl From<SqlitePool> for Api {
+    fn from(pool: SqlitePool) -> Self {
+        Self { pool, token: None }
+    }
 }
 
 /// Serve review and camera setup (nothing recorded) until Ctrl-C.
 pub async fn serve(cfg: Config) -> Result<()> {
     let pool = store::db::open(&cfg.db).await?;
-    let app = router(Some(pool), &cfg.web_dir, Live::setup_only(model::Clock::start()));
+    let api = Api { pool, token: cfg.token };
+    let app = router(Some(api), &cfg.web_dir, Live::setup_only(model::Clock::start()));
     let (addr, task) = listen(cfg.addr, app).await?;
     println!("Row Assist on http://{addr} (Ctrl-C to stop)");
     if !cfg.web_dir.join("index.html").is_file() {
@@ -63,18 +81,20 @@ pub async fn listen(addr: SocketAddr, app: Router) -> Result<(SocketAddr, tokio:
     Ok((bound, task))
 }
 
-/// `pool`: the session API, when a database is available.
-pub fn router(pool: Option<SqlitePool>, web_dir: &Path, live: Live) -> Router {
+/// `api`: the JSON API, when a database is available.
+pub fn router(api: Option<Api>, web_dir: &Path, live: Live) -> Router {
     let mut app = Router::new()
         .route("/ws/camera", get(camera::upgrade))
         .route("/ws/live", get(live::upgrade))
         .with_state(live);
-    if let Some(pool) = pool {
+    if let Some(api) = api {
         app = app.merge(
             Router::new()
                 .route("/api/sessions", get(list_sessions))
                 .route("/api/sessions/{id}", get(session_detail))
-                .with_state(pool),
+                .route("/api/health", get(health::get))
+                .route("/api/health/daily", axum::routing::post(health::post))
+                .with_state(api),
         );
     }
     let index = web_dir.join("index.html");
@@ -204,18 +224,19 @@ pub struct SessionDetail {
     pub typical_finish: Figure,
 }
 
-async fn list_sessions(State(pool): State<SqlitePool>) -> Result<Json<Vec<SessionItem>>, ApiError> {
-    let rows = store::sessions::list_sessions(&pool).await?;
+async fn list_sessions(State(api): State<Api>) -> Result<Json<Vec<SessionItem>>, ApiError> {
+    let rows = store::sessions::list_sessions(&api.pool).await?;
     // Newest first for the list.
     Ok(Json(rows.iter().rev().map(SessionItem::from).collect()))
 }
 
 async fn session_detail(
-    State(pool): State<SqlitePool>,
+    State(api): State<Api>,
     UrlPath(id): UrlPath<i64>,
 ) -> Result<Json<SessionDetail>, ApiError> {
-    let row = store::sessions::get_session(&pool, id).await?.ok_or(ApiError::NotFound)?;
-    let strokes = store::sessions::session_strokes(&pool, id).await?;
+    let pool = &api.pool;
+    let row = store::sessions::get_session(pool, id).await?.ok_or(ApiError::NotFound)?;
+    let strokes = store::sessions::session_strokes(pool, id).await?;
     let start = row.summary.started_at_us;
     let extremes = session::work_extremes(&strokes);
     let (typical_catch, typical_finish) = technique::typical_figures(&strokes);
@@ -244,6 +265,8 @@ async fn session_detail(
 
 pub enum ApiError {
     NotFound,
+    Unauthorized,
+    BadRequest(String),
     Internal(anyhow::Error),
 }
 
@@ -257,6 +280,12 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match self {
             Self::NotFound => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "not found"}))).into_response(),
+            Self::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "missing or wrong token (see `rowctl health --token`)"})),
+            )
+                .into_response(),
+            Self::BadRequest(m) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": m}))).into_response(),
             Self::Internal(e) => {
                 error!("API: {e:#}");
                 (
@@ -341,7 +370,7 @@ mod tests {
         };
         let strokes: Vec<_> = (0..5).map(|i| stroke(i, start)).collect();
         let id = save_session(&pool, &meta, &summary, &strokes).await.unwrap();
-        let app = router(Some(pool), &dir.join("no-frontend"), Live::setup_only(model::Clock::start()));
+        let app = router(Some(pool.into()), &dir.join("no-frontend"), Live::setup_only(model::Clock::start()));
 
         let (status, list) = get(app.clone(), "/api/sessions").await;
         assert_eq!(status, StatusCode::OK);
@@ -366,12 +395,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn watch_data_needs_the_token() {
+        let (pool, dir) = fixture("health").await;
+        let api = Api { pool, token: Some("s3cret-token-0123".into()) };
+        let app = router(Some(api), &dir.join("no-frontend"), Live::setup_only(model::Clock::start()));
+        let today = chrono::Local::now().date_naive();
+        let body = serde_json::json!({
+            "resting_hr": [{"date": today.to_string(), "value": 54}],
+            "hrv": [{"date": format!("{today}T03:00:00+00:00"), "value": 61.5}],
+        })
+        .to_string();
+        let post = |token: Option<&str>, body: String| {
+            let mut req = Request::post("/api/health/daily").header("content-type", "application/json");
+            if let Some(t) = token {
+                req = req.header("authorization", format!("Bearer {t}"));
+            }
+            req.body(Body::from(body)).unwrap()
+        };
+        let status = |res: axum::response::Response| res.status();
+        assert_eq!(status(app.clone().oneshot(post(None, body.clone())).await.unwrap()), StatusCode::UNAUTHORIZED);
+        assert_eq!(status(app.clone().oneshot(post(Some("nope"), body.clone())).await.unwrap()), StatusCode::UNAUTHORIZED);
+        assert_eq!(status(app.clone().oneshot(post(Some("s3cret-token-0123"), "{".into())).await.unwrap()), StatusCode::BAD_REQUEST);
+        assert_eq!(status(app.clone().oneshot(post(Some("s3cret-token-0123"), body)).await.unwrap()), StatusCode::OK);
+
+        let (s, health) = get(app, "/api/health").await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(health["days"][0]["resting_hr"], 54.0);
+        assert_eq!(health["days"][0]["hrv_ms"], 61.5);
+        assert_eq!(health["readiness"]["level"], "unknown", "one day is no baseline");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn unknown_paths_get_the_app() {
         let (pool, dir) = fixture("spa").await;
         let web = dir.join("dist");
         std::fs::create_dir_all(&web).unwrap();
         std::fs::write(web.join("index.html"), "<!doctype html><p>app</p>").unwrap();
-        let app = router(Some(pool), &web, Live::setup_only(model::Clock::start()));
+        let app = router(Some(pool.into()), &web, Live::setup_only(model::Clock::start()));
         for uri in ["/", "/sessions/4"] {
             let res = app
                 .clone()

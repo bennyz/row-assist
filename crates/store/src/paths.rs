@@ -24,3 +24,8 @@ pub fn db_path() -> PathBuf {
 pub fn sessions_dir() -> PathBuf {
     data_dir().join("sessions")
 }
+
+/// The shared secret for posting Watch data.
+pub fn token_path() -> PathBuf {
+    data_dir().join("api-token")
+}

@@ -42,6 +42,8 @@ pub struct HeartProfile {
 #[serde(rename_all = "snake_case")]
 pub enum Source {
     Set,
+    /// Resting HR from the Apple Watch (two-week median).
+    Watch,
     /// HRmax from Tanaka's `208 − 0.7 × age`; rest from a typical value.
     Estimated,
 }

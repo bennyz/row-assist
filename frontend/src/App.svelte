@@ -4,6 +4,7 @@
   import SessionView from './lib/SessionView.svelte';
   import CameraPage from './lib/CameraPage.svelte';
   import MirrorPage from './lib/MirrorPage.svelte';
+  import Readiness from './lib/Readiness.svelte';
 
   let sessions = $state([]);
   let current = $state(null);
@@ -49,6 +50,7 @@
 <div class="layout">
   <aside>
     <div class="brand">Row Assist</div>
+    <Readiness />
     <a
       class="nav"
       class:here={onCamera}

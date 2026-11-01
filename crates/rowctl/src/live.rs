@@ -286,6 +286,14 @@ impl Coach {
 
 /// The database is useful for zones and saving, but recording must not
 /// depend on it.
+async fn print_readiness(ctx: Option<&Ctx>) {
+    if let Some(c) = ctx
+        && let Ok(line) = crate::health::line(c).await
+    {
+        println!("{line}");
+    }
+}
+
 async fn open_ctx(args: &LiveArgs) -> Option<Ctx> {
     match Ctx::open(args.db.clone()).await {
         Ok(c) => Some(c),
@@ -308,6 +316,7 @@ pub async fn record(args: LiveArgs, out: Option<PathBuf>, note: Option<String>) 
     header.simulated = args.sim;
     header.plan = args.plan.map(|p| p.name().to_owned());
     let writer = FileWriter::create(&path, &header)?;
+    print_readiness(ctx.as_ref()).await;
     let focus = choose_focus(&args, ctx.as_ref()).await;
     let coach = Coach::new(&args, ctx.as_ref(), focus);
     println!("Recording to {} (Ctrl-C to stop)", path.display());
@@ -376,7 +385,11 @@ async fn run(
     let camera = if args.camera {
         let hub = live::channel();
         let session = server::Live::into_session(clock, tx.clone()).with_broadcast(hub.clone());
-        let app = server::router(pool, &crate::default_web_dir(), session);
+        let api = pool.map(|pool| server::Api {
+            pool,
+            token: store::health::token(&store::paths::token_path()).ok(),
+        });
+        let app = server::router(api, &crate::default_web_dir(), session);
         match server::listen(args.listen, app).await {
             Ok((addr, task)) => {
                 println!("Camera page: http://{addr}/camera (open it on this machine: browsers only allow the camera on localhost)");

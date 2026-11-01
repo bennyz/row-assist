@@ -17,6 +17,13 @@ pub struct Ctx {
     pub pool: SqlitePool,
     pub profile: Profile,
     pub age: Option<i64>,
+    /// Two-week median resting HR from the Watch, when there's a week of it.
+    pub watch_rest: Option<f64>,
+}
+
+/// Today as a day number (local).
+pub fn today() -> i64 {
+    store::health::day_number(chrono::Local::now().date_naive())
 }
 
 impl Ctx {
@@ -25,17 +32,20 @@ impl Ctx {
         let pool = store::db::open(&db_path).await?;
         let profile = store::sessions::get_profile(&pool).await?;
         let age = store::sessions::latest_age(&pool).await?;
+        let recent = store::health::list_days(&pool, today() - 30).await?;
+        let watch_rest = analysis::readiness::zone_rest(&recent, today());
         Ok(Self {
             db_path,
             pool,
             profile,
             age,
+            watch_rest,
         })
     }
 
     /// Heart profile with estimates filling what isn't set.
     pub fn heart(&self) -> Option<(HeartProfile, Source, Source)> {
-        self.profile.heart(self.age)
+        self.profile.heart(self.age, self.watch_rest)
     }
 
     /// "HRrest 60 (assumed), HRmax 184 (from age 35)".
@@ -45,10 +55,11 @@ impl Ctx {
         };
         let rest_note = match rest {
             Source::Set => String::new(),
+            Source::Watch => " (Watch, 2-week median)".into(),
             Source::Estimated => " (assumed)".into(),
         };
         let max_note = match (max, self.age) {
-            (Source::Set, _) => String::new(),
+            (Source::Set | Source::Watch, _) => String::new(),
             (Source::Estimated, Some(age)) => format!(" (estimated from age {age})"),
             (Source::Estimated, None) => " (assumed)".into(),
         };

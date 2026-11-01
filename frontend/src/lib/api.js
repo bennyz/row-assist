@@ -9,3 +9,4 @@ async function getJson(url) {
 
 export const listSessions = () => getJson('/api/sessions');
 export const getSession = (id) => getJson(`/api/sessions/${id}`);
+export const getHealth = () => getJson('/api/health');

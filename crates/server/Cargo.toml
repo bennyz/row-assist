@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+chrono.workspace = true
 model.workspace = true
 analysis.workspace = true
 store.workspace = true

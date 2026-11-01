@@ -307,6 +307,22 @@ and stay quiet on clean ones.
 - Readiness: ln(HRV) 7-day mean vs the 60-day band, resting HR vs baseline, last night's sleep
   → green / amber / red. Rules are explicit and tunable, not a black box.
 
+**Built:** `POST /api/health/daily` (`crates/server/src/health.rs`, token in
+`<data>/api-token`, constant-time compare) takes raw samples and aggregates them per day
+(`store::health`): mean HRV, mean resting HR, and sleep as the union of asleep intervals
+(phone and Watch overlap) counted for the morning it ended. `analysis::readiness`:
+
+| Signal | Amber | Red |
+|---|---|---|
+| ln(HRV), 7-day mean vs the 60 days before (±1 SD band, ≥ 14 days) | below the band | > 2 SD below |
+| Resting HR, 7-day mean vs the 30 days before | > +5 bpm | > +8 bpm |
+| Last night's sleep | < 6 h | < 5 h |
+
+One amber → amber; two ambers or any red → red. Shown at the start of `rowctl record`, by
+`rowctl health`, and on the review screen's sidebar. HRrest for the zones is the two-week
+median Watch resting HR (after a week of data) unless set by hand. Shortcut setup:
+`docs/SHORTCUT.md` (untested on a phone).
+
 ---
 
 ## 8. Planner (the improvement loop)
@@ -417,7 +433,7 @@ Each phase ends with something usable on the erg.
 | **0. Foundations** | workspace; event model; PM5 driver port + drag factor + **force curve spike**; H10 HR + RR; recorder, replay, dump; Concept2 CSV importer | a real row is recorded, replayed, and its force curves dumped; the CSV is in SQLite. *Status: code done and verified with the simulator; CSV imported. Waiting on hardware: `pm5-probe`, then a real `record`.* |
 | **1. Effort** | stroke assembler; session persistence; zones, TRIMP, EF, decoupling, watts at 20; drag-factor check; review screen; audio zone cues; reference-row comparison | comeback-ramp sessions are rowed with the app. *Status: built: `rowctl record --plan … --speak`, `analyze`, `sessions`, `profile`, `simulate`, and the review screen (`rowctl serve`). Waiting on the first real comeback-ramp rows.* |
 | **2. Posture** | camera page; framing check; near-side + horizon + scale; sync auto-calibration; joint angles; faults 1–4; one-focus coach; **mirror on the front screen**; deliberate-fault fixtures | the coach flags deliberately rowed faults and stays quiet on clean strokes. *Status: built: camera page (`rowctl record --camera`), setup check, near side, tilt, scale, sync, joint angles, faults 1–4, technique on the review screen, the one-focus coach (live), a kinematic rower in the simulator (`--sim-fault`). the mirror on the front screen. Next: real deliberately-rowed fixtures and threshold tuning, which need rows on the erg.* |
-| **3. Readiness** | Shortcut endpoint; baselines; readiness on setup screen; Karvonen zones from Watch resting HR | a week of Watch data shows up and changes the zones |
+| **3. Readiness** | Shortcut endpoint; baselines; readiness on setup screen; Karvonen zones from Watch resting HR | a week of Watch data shows up and changes the zones. *Status: built and tested with synthetic data; waiting on the Shortcut (docs/SHORTCUT.md).* |
 | **4. Improvement loop** | planner; PM5 workout programming; progress screen; form under fatigue; benchmarks | the app proposes next session + focus and loads it onto the PM5 |
 | **Later** | H10 accelerometer; faults 5–8; front camera view (symmetry); optional video capture for review; Concept2 Logbook API sync (incl. stroke data if present); weekly written summary | — |
 

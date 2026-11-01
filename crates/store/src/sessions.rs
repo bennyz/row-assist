@@ -168,14 +168,13 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// Heart profile with estimates filling what isn't set (`age` from the logbook).
-    pub fn heart(&self, age: Option<i64>) -> Option<(HeartProfile, Source, Source)> {
-        HeartProfile::resolve(
-            self.hr_rest.map(f64::from),
-            self.hr_max.map(f64::from),
-            age.map(|a| a as f64),
-            self.sex,
-        )
+    /// Heart profile with what's known filling what isn't set: resting HR
+    /// from the Watch, HRmax from age (from the logbook).
+    pub fn heart(&self, age: Option<i64>, watch_rest: Option<f64>) -> Option<(HeartProfile, Source, Source)> {
+        let from_watch = self.hr_rest.is_none() && watch_rest.is_some();
+        let rest = self.hr_rest.map(f64::from).or(watch_rest);
+        HeartProfile::resolve(rest, self.hr_max.map(f64::from), age.map(|a| a as f64), self.sex)
+            .map(|(p, r, m)| (p, if from_watch { Source::Watch } else { r }, m))
     }
 }
 
