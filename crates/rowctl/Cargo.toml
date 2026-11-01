@@ -1,0 +1,20 @@
+[package]
+name = "rowctl"
+description = "Record, replay and inspect Row Assist sessions from the terminal"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+model.workspace = true
+devices.workspace = true
+recording.workspace = true
+analysis.workspace = true
+store.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

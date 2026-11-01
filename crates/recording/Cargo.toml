@@ -1,0 +1,13 @@
+[package]
+name = "recording"
+description = "Session recording files: every event, in order, zstd-compressed MessagePack"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+model.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+rmp-serde.workspace = true
+zstd.workspace = true

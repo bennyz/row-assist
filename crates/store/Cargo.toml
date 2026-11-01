@@ -1,0 +1,18 @@
+[package]
+name = "store"
+description = "SQLite storage, data paths and the Concept2 logbook importer"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+analysis.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+csv.workspace = true
+chrono.workspace = true
+sqlx.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

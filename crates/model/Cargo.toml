@@ -1,0 +1,9 @@
+[package]
+name = "model"
+description = "Shared event model and session clock (no I/O)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true

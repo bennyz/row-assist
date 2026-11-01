@@ -1,0 +1,10 @@
+[package]
+name = "analysis"
+description = "Pure analysis over events: stroke assembly, rowing metrics"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+model.workspace = true
+serde.workspace = true

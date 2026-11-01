@@ -1,0 +1,8 @@
+# Concept2 PM5 over USB: let members of `uucp` open its hidraw device.
+# Arch has no `plugdev` group; `uucp` is its serial/device-access group.
+#
+# Install:
+#   sudo cp contrib/udev/99-concept2.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+#   sudo usermod -aG uucp "$USER"   # then log in again
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="17a4", MODE="0660", GROUP="uucp"
