@@ -119,7 +119,14 @@ enum Command {
         fault: Option<simulate::FaultArg>,
     },
     /// Send each CSAFE command to the PM5 on its own and show the raw reply
-    Pm5Probe,
+    Pm5Probe {
+        /// Instead, try programming a fixed-time workout (sets it on the PM5)
+        #[arg(long)]
+        workout: bool,
+        /// Workout length for --workout
+        #[arg(long, default_value_t = 20)]
+        minutes: u32,
+    },
     /// Import a Concept2 logbook CSV export
     ImportC2 {
         file: PathBuf,
@@ -192,7 +199,8 @@ async fn main() -> Result<()> {
             &out,
             simulate::SimArgs { minutes, watts, spm, hr, plan, note, pose, fault },
         ),
-        Command::Pm5Probe => probe::run().await,
+        Command::Pm5Probe { workout: false, .. } => probe::run().await,
+        Command::Pm5Probe { workout: true, minutes } => probe::workout(minutes).await,
         Command::ImportC2 { file, db } => history::import(&file, db).await,
         Command::History { db } => history::show(db).await,
     };

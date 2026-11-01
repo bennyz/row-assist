@@ -335,6 +335,56 @@ pub fn probe_cases() -> Vec<(&'static str, Vec<Cmd>)> {
 }
 
 /// Run every probe case once.
+/// A fixed-time workout through the standard CSAFE commands (as open-source
+/// rowing tools program Concept2 monitors), started at once.
+pub fn fixed_time_workout(seconds: u32) -> Vec<Cmd> {
+    let (h, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    vec![
+        Cmd::StdLong { code: std_cmd::SET_TWORK, args: vec![h as u8, m as u8, s as u8] },
+        Cmd::StdLong { code: std_cmd::SET_PROGRAM, args: vec![0, 0] },
+        Cmd::Std(std_cmd::GO_IN_USE),
+    ]
+}
+
+pub fn fixed_distance_workout(metres: u16) -> Vec<Cmd> {
+    let [lo, hi] = metres.to_le_bytes();
+    vec![
+        Cmd::StdLong { code: std_cmd::SET_HORIZONTAL, args: vec![lo, hi, std_cmd::UNIT_METRES] },
+        Cmd::StdLong { code: std_cmd::SET_PROGRAM, args: vec![0, 0] },
+        Cmd::Std(std_cmd::GO_IN_USE),
+    ]
+}
+
+fn workout_readback() -> Vec<Cmd> {
+    vec![Cmd::pm(pm_cmd::GET_WORKOUT_TYPE), Cmd::pm(pm_cmd::GET_WORKOUT_STATE)]
+}
+
+/// The experiment for programming workouts: read the workout type, set a
+/// fixed-time workout one command per frame (so a rejection names the
+/// command), read back; then the same in one frame. Changes what's on the PM5.
+pub fn workout_probe(seconds: u32) -> Result<Vec<(String, Exchange)>> {
+    let pm5 = Pm5::open()?;
+    let mut out = Vec::new();
+    let mut step = |label: String, cmds: &[Cmd]| -> Result<()> {
+        out.push((label, pm5.transact(cmds)?));
+        std::thread::sleep(Duration::from_millis(300));
+        Ok(())
+    };
+    step("workout type/state before".into(), &workout_readback())?;
+    for cmd in fixed_time_workout(seconds) {
+        let label = match &cmd {
+            Cmd::StdLong { code: std_cmd::SET_TWORK, .. } => format!("SETTWORK {}:{:02} (std 0x20)", seconds / 60, seconds % 60),
+            Cmd::StdLong { code: std_cmd::SET_PROGRAM, .. } => "SETPROGRAM 0 (std 0x24)".into(),
+            _ => "GOINUSE (std 0x85)".into(),
+        };
+        step(label, &[cmd])?;
+    }
+    step("workout type/state after separate frames".into(), &workout_readback())?;
+    step("SETTWORK + SETPROGRAM + GOINUSE in one frame".into(), &fixed_time_workout(seconds))?;
+    step("workout type/state after one frame".into(), &workout_readback())?;
+    Ok(out)
+}
+
 pub fn probe() -> Result<Vec<(&'static str, Exchange)>> {
     let pm5 = Pm5::open()?;
     let mut out = Vec::new();
@@ -365,6 +415,23 @@ mod tests {
             payload(&status_cmds()),
             vec![0xA7, 0xB4, 0x1A, 0x05, 0xBF, 0xC1, 0xA3, 0xA0, 0x8D],
         );
+    }
+
+    /// Standard long commands go unwrapped, each with its length byte.
+    #[test]
+    fn workout_frame_bytes() {
+        assert_eq!(
+            payload(&fixed_time_workout(20 * 60)),
+            vec![0x20, 0x03, 0x00, 0x14, 0x00, 0x24, 0x02, 0x00, 0x00, 0x85],
+        );
+        assert_eq!(
+            payload(&fixed_distance_workout(2000)),
+            vec![0x21, 0x03, 0xD0, 0x07, 0x24, 0x24, 0x02, 0x00, 0x00, 0x85],
+        );
+        assert_eq!(payload(&fixed_time_workout(3725))[..5], [0x20, 0x03, 1, 2, 5], "1:02:05");
+        // Mixed with PM commands, the wrapper still groups only those.
+        let mixed = [Cmd::pm(pm_cmd::GET_WORKOUT_TYPE), fixed_time_workout(60).remove(0)];
+        assert_eq!(payload(&mixed), vec![0x1A, 0x01, 0x89, 0x20, 0x03, 0, 1, 0]);
     }
 
     #[test]

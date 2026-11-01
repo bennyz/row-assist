@@ -17,6 +17,44 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
+/// The PM's workout type codes (published table; to be confirmed).
+fn workout_type(code: u8) -> &'static str {
+    match code {
+        0 => "just row, no splits",
+        1 => "just row, splits",
+        2 => "fixed distance, no splits",
+        3 => "fixed distance, splits",
+        4 => "fixed time, no splits",
+        5 => "fixed time, splits",
+        6 => "fixed time intervals",
+        7 => "fixed distance intervals",
+        8 => "variable intervals",
+        _ => "other",
+    }
+}
+
+pub async fn workout(minutes: u32) -> Result<()> {
+    println!(
+        "This sets a {minutes}:00 workout on the PM5 (press Menu on the PM5 to cancel it).\n\
+         Run it with the PM5 awake on its main menu.\n"
+    );
+    let results = tokio::task::spawn_blocking(move || pm5::workout_probe(minutes * 60)).await??;
+    for (label, ex) in &results {
+        print_exchange(label, ex);
+        if let Some(r) = &ex.response
+            && let Some(t) = r.items.iter().find(|i| i.pm && i.code == pm_cmd::GET_WORKOUT_TYPE)
+            && let Some(&code) = t.data.first()
+        {
+            println!("  → workout type {code}: {}", workout_type(code));
+        }
+    }
+    println!(
+        "\nIt worked if a step's status shows previous frame Ok and the type afterwards is\n\
+         fixed time (4 or 5), with the PM5 showing the workout. Paste this output either way."
+    );
+    Ok(())
+}
+
 fn print_exchange(label: &str, ex: &Exchange) {
     println!("{label}");
     println!("  tx {}", hex(&ex.tx));

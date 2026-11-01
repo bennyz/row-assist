@@ -382,6 +382,11 @@ Fitness after a long gap is unknown, so the ramp measures it:
   v1 found that `SETPMCFG` workout sub-commands return PREVREJECT without Concept2's USB
   auth; only the screen-state command was accepted. The standard CSAFE workout commands
   (`SETTWORK`, `SETHORIZONTAL`, `SETPROGRAM`) are untested. Fallback: set it on the PM5 by hand.
+- **Experiment ready:** `rowctl pm5-probe --workout` reads the workout type, sends
+  SETTWORK, SETPROGRAM 0 and GOINUSE one frame each (so a rejection names the command), reads
+  back, then the same in one frame, and reads back again. Fixed time (type 4/5) afterwards
+  means it works; the frames (`pm5::fixed_time_workout`, `fixed_distance_workout`) are
+  byte-tested.
 
 ### 8.5 Benchmarks
 
@@ -478,7 +483,8 @@ Each phase ends with something usable on the erg.
   with a test over all 256 byte values. That bug likely caused v1's "intermittent checksum
   failures", and would have corrupted ~40% of force-curve replies.
 - **PM5 workout programming over CSAFE**: v1 got PREVREJECT for workout sub-commands (see
-  §8.4); needs a spike of the standard CSAFE workout commands before Phase 4.
+  §8.4); the standard-command experiment is ready (`rowctl pm5-probe --workout`) and needs a
+  PM5.
 - **H10 connections**: PM5 + laptop at the same time must be verified.
 - **HR max** is unknown; zones stay provisional (age estimate) until set or a hard effort is recorded.
 - **Which PM5 poll carries a stroke's power and rate** is assumed (the last one before the next

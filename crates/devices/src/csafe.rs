@@ -35,6 +35,26 @@ pub mod std_cmd {
     /// Wrapper carrying PM configuration commands. v1 found that only
     /// SET_SCREENSTATE is accepted over USB; workout setup gets PREVREJECT.
     pub const SET_PM_CFG: u8 = 0x76;
+
+    // State changes (short).
+    pub const RESET: u8 = 0x81;
+    pub const GO_IDLE: u8 = 0x82;
+    pub const GO_IN_USE: u8 = 0x85;
+    pub const GO_FINISHED: u8 = 0x86;
+
+    // Workout setup (long). Untested on the PM5: `rowctl pm5-probe --workout`.
+    /// hours, minutes, seconds
+    pub const SET_TWORK: u8 = 0x20;
+    /// distance LSB, MSB, unit
+    pub const SET_HORIZONTAL: u8 = 0x21;
+    /// workout number (0: the one just set), unused
+    pub const SET_PROGRAM: u8 = 0x24;
+    /// power LSB, MSB, unit
+    pub const SET_POWER: u8 = 0x34;
+
+    /// CSAFE unit codes.
+    pub const UNIT_METRES: u8 = 0x24;
+    pub const UNIT_WATTS: u8 = 0x58;
 }
 
 /// Concept2 proprietary commands, sent inside [`std_cmd::SET_USER_CFG1`].
@@ -73,6 +93,8 @@ pub enum CsafeError {
 pub enum Cmd {
     /// Standard short command (`0x80..=0xFF`, no arguments).
     Std(u8),
+    /// Standard long command (`0x00..=0x7F`): length byte plus `args`, not wrapped.
+    StdLong { code: u8, args: Vec<u8> },
     /// Concept2 proprietary command. Codes below `0x80` are long commands and
     /// always carry a length byte plus `args`.
     Pm { code: u8, args: Vec<u8> },
@@ -90,7 +112,7 @@ impl Cmd {
     /// `(code, is_pm)`: what the matching response item looks like.
     pub fn key(&self) -> (u8, bool) {
         match self {
-            Self::Std(code) => (*code, false),
+            Self::Std(code) | Self::StdLong { code, .. } => (*code, false),
             Self::Pm { code, .. } => (*code, true),
         }
     }
@@ -114,6 +136,12 @@ pub fn payload(cmds: &[Cmd]) -> Vec<u8> {
             Cmd::Std(code) => {
                 flush(&mut out, &mut wrap);
                 out.push(*code);
+            }
+            Cmd::StdLong { code, args } => {
+                flush(&mut out, &mut wrap);
+                out.push(*code);
+                out.push(args.len() as u8);
+                out.extend_from_slice(args);
             }
             Cmd::Pm { code, args } => {
                 wrap.push(*code);
