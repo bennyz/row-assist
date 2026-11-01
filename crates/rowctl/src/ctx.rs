@@ -2,7 +2,9 @@
 
 use std::path::PathBuf;
 
-use analysis::reference::Piece;
+use analysis::planner::Row;
+use analysis::reference::{self, Piece};
+use analysis::technique::Fault;
 use analysis::zones::{HeartProfile, Source};
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDateTime};
@@ -121,3 +123,69 @@ impl Ctx {
 pub fn local(us: i64) -> Option<NaiveDateTime> {
     DateTime::from_timestamp_micros(us).map(|t| t.with_timezone(&Local).naive_local())
 }
+
+impl Ctx {
+    /// The fault with the highest rate (≥ 10%) over the last 3 real sessions;
+    /// camera faults only if this session has the camera.
+    pub async fn auto_focus(&self, camera: bool) -> Option<(Fault, f64)> {
+        let sessions = store::sessions::list_sessions(&self.pool).await.ok()?;
+        let recent: Vec<_> = sessions.iter().rev().filter(|s| !s.meta.simulated).take(FOCUS_SESSIONS).collect();
+        let rate = |f: Fault| {
+            let rates: Vec<f64> = recent
+                .iter()
+                .filter_map(|s| s.summary.faults.iter().find(|r| r.fault == f && r.of > 0))
+                .map(|r| r.hits as f64 / r.of as f64)
+                .collect();
+            (!rates.is_empty()).then(|| rates.iter().sum::<f64>() / rates.len() as f64)
+        };
+        Fault::ALL
+            .into_iter()
+            .filter(|f| camera || !f.needs_camera())
+            .filter_map(|f| rate(f).map(|r| (f, r)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .filter(|&(_, r)| r >= FOCUS_MIN_RATE)
+    }
+
+    /// Every row so far for the planner: logbook and app sessions, without
+    /// logbook uploads of rows the app recorded, reference rows with their verdict.
+    pub async fn rows(&self) -> Result<Vec<Row>> {
+        let sessions = store::sessions::list_sessions(&self.pool).await?;
+        let real: Vec<_> = sessions.iter().filter(|s| !s.meta.simulated).collect();
+        let app_starts: Vec<NaiveDateTime> = real.iter().filter_map(|s| local(s.summary.started_at_us)).collect();
+        let mut rows = Vec::new();
+        for r in store::db::list_concept2(&self.pool).await? {
+            let same_row = app_starts.iter().any(|t| (r.started_at - *t).num_minutes().abs() <= SAME_ROW_MINUTES);
+            if !same_row && r.machine.eq_ignore_ascii_case("rowerg") {
+                rows.push(Row {
+                    day: store::health::day_number(r.started_at.date()),
+                    minutes: r.work_time_s / 60.0,
+                    plan: None,
+                    ramp: None,
+                });
+            }
+        }
+        for s in real {
+            let Some(start) = local(s.summary.started_at_us) else { continue };
+            let ramp = if s.meta.plan.as_deref() == Some("reference") {
+                let history = self.history(s.summary.started_at_us).await?;
+                match reference::compare(&s.summary.whole, &history) {
+                    reference::Outcome::Compared(c) => Some(c.ramp),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            rows.push(Row {
+                day: store::health::day_number(start.date()),
+                minutes: s.summary.whole.seconds / 60.0,
+                plan: s.meta.plan.clone(),
+                ramp,
+            });
+        }
+        Ok(rows)
+    }
+}
+
+/// Faults rarer than this in recent sessions aren't worth a session's focus.
+const FOCUS_MIN_RATE: f64 = 0.10;
+const FOCUS_SESSIONS: usize = 3;

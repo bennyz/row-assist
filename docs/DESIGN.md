@@ -327,6 +327,16 @@ median Watch resting HR (after a week of data) unless set by hand. Shortcut setu
 
 ## 8. Planner (the improvement loop)
 
+**Built (`analysis::planner`, `rowctl plan`):** the rules below, over every row so far (logbook
+and app sessions, uploads of the same row counted once) and today's readiness. A gap over 21
+days starts a block with a reference row; its verdict sets the comeback ramp (1/2/3 weeks of
+easy rows); then build weeks: rate steps once a week after a steady row, otherwise steady
+rows, a lighter fourth week, the rate-20 test after 3 build weeks (once per block). A gap of
+8–21 days turns intensity into an easy week. Amber → no intensity; red → minimum session.
+`rowctl plan` prints the session, the reasons, and the exact `rowctl record --plan …` command;
+the presets record their name (`reference`, `easy`, `steady`, `rate20`, `rate_steps`) so the
+planner knows what was rowed.
+
 ### 8.1 Consistency rules
 
 - Main rule: **no gap longer than 7 days**.
@@ -434,7 +444,7 @@ Each phase ends with something usable on the erg.
 | **1. Effort** | stroke assembler; session persistence; zones, TRIMP, EF, decoupling, watts at 20; drag-factor check; review screen; audio zone cues; reference-row comparison | comeback-ramp sessions are rowed with the app. *Status: built: `rowctl record --plan … --speak`, `analyze`, `sessions`, `profile`, `simulate`, and the review screen (`rowctl serve`). Waiting on the first real comeback-ramp rows.* |
 | **2. Posture** | camera page; framing check; near-side + horizon + scale; sync auto-calibration; joint angles; faults 1–4; one-focus coach; **mirror on the front screen**; deliberate-fault fixtures | the coach flags deliberately rowed faults and stays quiet on clean strokes. *Status: built: camera page (`rowctl record --camera`), setup check, near side, tilt, scale, sync, joint angles, faults 1–4, technique on the review screen, the one-focus coach (live), a kinematic rower in the simulator (`--sim-fault`). the mirror on the front screen. Next: real deliberately-rowed fixtures and threshold tuning, which need rows on the erg.* |
 | **3. Readiness** | Shortcut endpoint; baselines; readiness on setup screen; Karvonen zones from Watch resting HR | a week of Watch data shows up and changes the zones. *Status: built and tested with synthetic data; waiting on the Shortcut (docs/SHORTCUT.md).* |
-| **4. Improvement loop** | planner; PM5 workout programming; progress screen; form under fatigue; benchmarks | the app proposes next session + focus and loads it onto the PM5 |
+| **4. Improvement loop** | planner; PM5 workout programming; progress screen; form under fatigue; benchmarks | the app proposes next session + focus and loads it onto the PM5. *Status: planner + benchmark scheduling built (`rowctl plan`); PM5 programming needs hardware; progress screen not started.* |
 | **Later** | H10 accelerometer; faults 5–8; front camera view (symmetry); optional video capture for review; Concept2 Logbook API sync (incl. stroke data if present); weekly written summary | — |
 
 ---

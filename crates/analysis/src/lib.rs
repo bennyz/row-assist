@@ -3,6 +3,7 @@
 
 pub mod cues;
 pub mod metrics;
+pub mod planner;
 pub mod pose;
 pub mod readiness;
 pub mod reference;

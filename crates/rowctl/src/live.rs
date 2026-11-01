@@ -94,6 +94,19 @@ pub enum FocusArg {
     RushedRecovery,
 }
 
+impl FocusArg {
+    /// The flag value that selects `fault`.
+    pub fn flag(fault: Fault) -> String {
+        let arg = match fault {
+            Fault::ShortCompression => Self::ShortCompression,
+            Fault::ShootingSlide => Self::ShootingSlide,
+            Fault::EarlyArms => Self::EarlyArms,
+            Fault::RushedRecovery => Self::RushedRecovery,
+        };
+        arg.to_possible_value().map(|v| v.get_name().to_owned()).unwrap_or_default()
+    }
+}
+
 impl LiveArgs {
     /// Will strokes have a camera view?
     fn camera_on(&self) -> bool {
@@ -101,9 +114,6 @@ impl LiveArgs {
     }
 }
 
-/// Faults rarer than this in recent sessions aren't worth a session's focus.
-const FOCUS_MIN_RATE: f64 = 0.10;
-const FOCUS_SESSIONS: usize = 3;
 
 async fn choose_focus(args: &LiveArgs, ctx: Option<&Ctx>) -> Option<Fault> {
     let chosen = match args.focus {
@@ -113,24 +123,7 @@ async fn choose_focus(args: &LiveArgs, ctx: Option<&Ctx>) -> Option<Fault> {
         FocusArg::EarlyArms => Fault::EarlyArms,
         FocusArg::RushedRecovery => Fault::RushedRecovery,
         FocusArg::Auto => {
-            let sessions = store::sessions::list_sessions(&ctx?.pool).await.ok()?;
-            let recent: Vec<_> = sessions.iter().rev().filter(|s| !s.meta.simulated).take(FOCUS_SESSIONS).collect();
-            let rate = |f: Fault| {
-                let rates: Vec<f64> = recent
-                    .iter()
-                    .filter_map(|s| s.summary.faults.iter().find(|r| r.fault == f && r.of > 0))
-                    .map(|r| r.hits as f64 / r.of as f64)
-                    .collect();
-                (!rates.is_empty()).then(|| rates.iter().sum::<f64>() / rates.len() as f64)
-            };
-            let (fault, r) = Fault::ALL
-                .into_iter()
-                .filter(|f| args.camera_on() || !f.needs_camera())
-                .filter_map(|f| rate(f).map(|r| (f, r)))
-                .max_by(|a, b| a.1.total_cmp(&b.1))?;
-            if r < FOCUS_MIN_RATE {
-                return None;
-            }
+            let (fault, r) = ctx?.auto_focus(args.camera_on()).await?;
             println!("Focus picked from your last sessions: {} on {:.0}% of strokes", fault.label(), r * 100.0);
             fault
         }

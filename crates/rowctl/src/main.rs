@@ -12,6 +12,7 @@ mod history;
 mod inspect;
 mod live;
 mod plan;
+mod planning;
 mod probe;
 mod profile;
 mod render;
@@ -77,6 +78,8 @@ enum Command {
     Profile(profile::ProfileArgs),
     /// Apple Watch recovery data and today's readiness
     Health(health::HealthArgs),
+    /// What to row today, and why
+    Plan(planning::PlanArgs),
     /// Serve the review screen in the browser
     Serve {
         /// Address to listen on (0.0.0.0:8080 to reach it from another machine)
@@ -171,6 +174,7 @@ async fn main() -> Result<()> {
         Command::Sessions { db } => review::sessions(db).await,
         Command::Profile(args) => profile::run(args).await,
         Command::Health(args) => health::run(args).await,
+        Command::Plan(args) => planning::run(args).await,
         Command::Serve { addr, db, web } => {
             server::serve(server::Config {
                 addr,

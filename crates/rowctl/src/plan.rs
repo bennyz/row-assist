@@ -10,6 +10,12 @@ pub enum Plan {
     Reference,
     /// 20 min easy at rate 18–20, heart rate kept under zone 2's top
     Easy,
+    /// 30 min steady in zone 2 at rate 18–20
+    Steady,
+    /// The benchmark: 20 min held at exactly rate 20, best steady power
+    Rate20,
+    /// Rate steps (set the intervals on the PM5): only time calls
+    RateSteps,
 }
 
 impl Plan {
@@ -18,6 +24,9 @@ impl Plan {
         match self {
             Self::Reference => "reference",
             Self::Easy => "easy",
+            Self::Steady => "steady",
+            Self::Rate20 => "rate20",
+            Self::RateSteps => "rate_steps",
         }
     }
 
@@ -25,6 +34,9 @@ impl Plan {
         match self {
             Self::Reference => "Reference row: 20 min at rate 20, about 53 W, same drag factor as every reference row",
             Self::Easy => "Easy row: 20–25 min at rate 18–20, heart rate in zone 2 or below",
+            Self::Steady => "Steady row: 30–45 min in zone 2 at rate 18–20",
+            Self::Rate20 => "Rate-20 test: 20 min at exactly 20 spm, as much steady power as you can hold",
+            Self::RateSteps => "Rate steps: 4 × 5 min at rate 20 / 22 / 24 / 22 with 2 min easy between, set on the PM5",
         }
     }
 
@@ -41,6 +53,22 @@ impl Plan {
                 watts: None,
                 hr_max: heart.and_then(|h| h.zone_bpm(2)).map(|(_, top)| top),
                 minutes: Some(20.0),
+            },
+            Self::Steady => Targets {
+                rate: Some((17.5, 20.5)),
+                watts: None,
+                hr_max: heart.and_then(|h| h.zone_bpm(2)).map(|(_, top)| top),
+                minutes: Some(30.0),
+            },
+            Self::Rate20 => Targets {
+                rate: Some((19.5, 20.5)),
+                watts: None,
+                hr_max: None,
+                minutes: Some(20.0),
+            },
+            Self::RateSteps => Targets {
+                minutes: Some(34.0),
+                ..Default::default()
             },
         }
     }
