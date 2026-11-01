@@ -12,6 +12,7 @@ use model::{Event, EventKind, StrokeState};
 use serde::{Deserialize, Serialize};
 
 use crate::metrics::LBF_TO_N;
+use crate::technique::{FaultHit, StrokePose};
 
 /// One drive's force curve plus the timing around it.
 #[derive(Debug, Clone, PartialEq)]
@@ -168,6 +169,11 @@ pub struct StrokeRecord {
     pub peak_n: Option<f64>,
     /// Drive force resampled to [`CURVE_POINTS`] points, newtons.
     pub force_n: Vec<f64>,
+    /// The camera's view of the stroke, when there was one.
+    #[serde(default)]
+    pub pose: Option<StrokePose>,
+    #[serde(default)]
+    pub faults: Vec<FaultHit>,
 }
 
 impl StrokeRecord {
@@ -293,6 +299,8 @@ impl StrokeAssembler {
                 .into_iter()
                 .map(|v| v * LBF_TO_N)
                 .collect(),
+            pose: None,
+            faults: Vec::new(),
         }
     }
 }

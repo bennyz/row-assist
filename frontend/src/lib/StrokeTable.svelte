@@ -1,6 +1,6 @@
 <script>
   // Every stroke as a table: the charts' values without hovering.
-  import { clock, fixed } from './format.js';
+  import { clock, faultList, fixed } from './format.js';
 
   let { strokes, selected = $bindable() } = $props();
 </script>
@@ -12,7 +12,7 @@
       <thead>
         <tr>
           <th>#</th><th>time</th><th>drive s</th><th>ratio</th><th>W</th><th>spm</th><th>J</th><th>m</th>
-          <th>HR</th><th>peak N</th>
+          <th>HR</th><th>peak N</th><th class="left">faults</th>
         </tr>
       </thead>
       <tbody>
@@ -28,6 +28,7 @@
             <td>{fixed(s.distance_m, 1)}</td>
             <td>{fixed(s.hr)}</td>
             <td>{fixed(s.peak_n)}</td>
+            <td class="left">{faultList(s.faults, 'short')}</td>
           </tr>
         {/each}
       </tbody>
@@ -69,6 +70,9 @@
   }
   tr {
     cursor: pointer;
+  }
+  .left {
+    text-align: left;
   }
   tbody tr:hover td {
     color: var(--ink);

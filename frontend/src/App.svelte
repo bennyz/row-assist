@@ -2,11 +2,14 @@
   import { listSessions } from './lib/api.js';
   import SessionList from './lib/SessionList.svelte';
   import SessionView from './lib/SessionView.svelte';
+  import CameraPage from './lib/CameraPage.svelte';
 
   let sessions = $state([]);
   let current = $state(null);
   let error = $state(null);
   let loaded = $state(false);
+  let path = $state(location.pathname);
+  const onCamera = $derived(path.startsWith('/camera'));
 
   const fromPath = () => {
     const m = location.pathname.match(/^\/sessions\/(\d+)/);
@@ -21,23 +24,42 @@
     .catch((e) => (error = e.message))
     .finally(() => (loaded = true));
 
-  function select(id) {
-    current = id;
-    history.pushState(null, '', `/sessions/${id}`);
+  function go(to) {
+    history.pushState(null, '', to);
+    path = to;
   }
 
-  window.addEventListener('popstate', () => (current = fromPath() ?? sessions[0]?.id ?? null));
+  function select(id) {
+    current = id;
+    go(`/sessions/${id}`);
+  }
+
+  window.addEventListener('popstate', () => {
+    path = location.pathname;
+    current = fromPath() ?? sessions[0]?.id ?? null;
+  });
 </script>
 
 <div class="layout">
   <aside>
     <div class="brand">Row Assist</div>
+    <a
+      class="nav"
+      class:here={onCamera}
+      href="/camera"
+      onclick={(e) => {
+        e.preventDefault();
+        go('/camera');
+      }}>Camera setup</a
+    >
     {#if sessions.length}
-      <SessionList {sessions} {current} onselect={select} />
+      <SessionList {sessions} current={onCamera ? null : current} onselect={select} />
     {/if}
   </aside>
   <main>
-    {#if error}
+    {#if onCamera}
+      <CameraPage />
+    {:else if error}
       <p class="error">Couldn't reach the server: {error}</p>
     {:else if current != null}
       <SessionView id={current} />
@@ -72,6 +94,23 @@
     color: var(--accent);
     margin-bottom: 1.75rem;
   }
+  .nav {
+    display: block;
+    margin: 0 0 1.75rem;
+    padding: 0.35rem 0.75rem;
+    border-left: 2px solid transparent;
+    color: var(--ink-2);
+    text-decoration: none;
+    font-size: 14px;
+  }
+  .nav:hover {
+    color: var(--ink);
+  }
+  .nav.here {
+    border-left-color: var(--accent);
+    color: var(--ink);
+    background: var(--surface);
+  }
   main {
     background: var(--surface);
     padding: 1.5rem 2.25rem 4rem;
@@ -82,7 +121,7 @@
     color: var(--ink);
   }
   .error {
-    color: var(--z4);
+    color: var(--bad);
   }
   @media (max-width: 760px) {
     .layout {

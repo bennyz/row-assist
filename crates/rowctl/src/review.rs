@@ -200,6 +200,26 @@ fn print_summary(s: &Summary, ctx: &Ctx) {
     if let Some(seg) = &s.last_10_min {
         println!("  Last 10 min: {} W, HR {}, EF {}", opt(seg.watts, 0), opt(seg.hr, 0), opt(seg.ef, 3));
     }
+    if let Some(cam) = &s.camera {
+        println!(
+            "  Camera: {} side, tilt {:.1}°, {}",
+            cam.side.label(),
+            // No "-0.0".
+            if cam.tilt_deg.abs() < 0.05 { 0.0 } else { cam.tilt_deg },
+            cam.offset_ms
+                .map(|o| format!("PM5 catch {o:.0} ms after the camera's"))
+                .unwrap_or_else(|| "not enough strokes to sync".into())
+        );
+    }
+    let faults: Vec<String> = s
+        .faults
+        .iter()
+        .filter(|r| r.of > 0)
+        .map(|r| format!("{} {}%", r.fault.label(), (r.hits as f64 * 100.0 / r.of as f64).round()))
+        .collect();
+    if !faults.is_empty() {
+        println!("  Faults (share of strokes): {}", faults.join(", "));
+    }
     if let Some(df) = s.drag_factor {
         let target = match ctx.profile.drag_target {
             Some(t) if (df as i16 - t as i16).abs() > 5 => format!(" (target {t}: more than 5 off)"),

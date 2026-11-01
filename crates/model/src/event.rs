@@ -22,6 +22,8 @@ pub enum EventKind {
     Link(Link),
     /// A user annotation, e.g. "early arms on purpose" for fault fixtures.
     Marker { label: String },
+    /// Body landmarks from one camera frame, detected in the browser.
+    Pose(Pose),
 }
 
 /// PM5 status as reported by one poll. Fields are `None` when the PM5 left
@@ -107,6 +109,25 @@ impl Heart {
     pub fn rr_ms(&self) -> impl Iterator<Item = f64> + '_ {
         self.rr_1024.iter().map(|&rr| rr as f64 * 1000.0 / 1024.0)
     }
+}
+
+/// Joints kept from the pose model, in the order [`Pose::points`] uses for
+/// each side. Enough for knee, hip, elbow, trunk and shin angles.
+pub const POSE_JOINTS: [&str; 9] = ["ear", "shoulder", "elbow", "wrist", "hip", "knee", "ankle", "heel", "toe"];
+
+/// One camera frame's landmarks. Coordinates are fractions of the frame
+/// (x right, y down), so `width`/`height` are needed to measure angles.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Pose {
+    /// When the frame was captured, µs since the Unix epoch, by the browser's
+    /// clock (`performance.timeOrigin + captureTime`). The event's `t_us` is
+    /// when it reached the app; this is the one to align with the PM5.
+    pub captured_us: i64,
+    pub width: u16,
+    pub height: u16,
+    /// `[x, y, visibility]` for each of [`POSE_JOINTS`] on the body's left
+    /// side, then the same for the right side.
+    pub points: Vec<[f32; 3]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

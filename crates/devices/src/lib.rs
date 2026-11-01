@@ -5,3 +5,4 @@ pub mod csafe;
 pub mod h10;
 pub mod pm5;
 pub mod sim;
+pub mod sim_pose;

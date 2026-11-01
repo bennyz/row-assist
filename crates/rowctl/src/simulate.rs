@@ -5,7 +5,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Result;
+use clap::ValueEnum;
 use devices::sim::{SimConfig, generate};
+use devices::sim_pose::{PoseSim, SimFault};
 use model::Clock;
 use recording::{FileWriter, Header};
 
@@ -18,6 +20,27 @@ pub struct SimArgs {
     pub hr: (f64, f64),
     pub plan: Option<Plan>,
     pub note: Option<String>,
+    /// Simulate the camera too.
+    pub pose: bool,
+    pub fault: Option<FaultArg>,
+}
+
+/// Technique faults the simulated rower can make (implies --pose).
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum FaultArg {
+    EarlyArms,
+    ShootingSlide,
+    ShortCompression,
+}
+
+impl From<FaultArg> for SimFault {
+    fn from(f: FaultArg) -> Self {
+        match f {
+            FaultArg::EarlyArms => Self::EarlyArms,
+            FaultArg::ShootingSlide => Self::ShootingSlide,
+            FaultArg::ShortCompression => Self::ShortCompression,
+        }
+    }
 }
 
 pub fn run(out: &Path, a: SimArgs) -> Result<()> {
@@ -26,6 +49,10 @@ pub fn run(out: &Path, a: SimArgs) -> Result<()> {
         watts: a.watts,
         hr_start: a.hr.0,
         hr_end: a.hr.1,
+        pose: (a.pose || a.fault.is_some()).then(|| PoseSim {
+            fault: a.fault.map(SimFault::from),
+            ..Default::default()
+        }),
         ..Default::default()
     };
     let duration = Duration::from_secs_f64(a.minutes * 60.0);

@@ -3,9 +3,11 @@
 
 pub mod cues;
 pub mod metrics;
+pub mod pose;
 pub mod reference;
 pub mod session;
 pub mod strokes;
+pub mod technique;
 pub mod zones;
 
 use model::Event;
@@ -23,9 +25,14 @@ pub fn analyze(events: &[Event], profile: Option<&zones::HeartProfile>) -> Analy
     let mut asm = strokes::StrokeAssembler::new();
     let mut strokes: Vec<_> = events.iter().filter_map(|ev| asm.push(ev)).collect();
     strokes.extend(asm.finish());
+    let camera = technique::apply(&mut strokes, events);
     let hearts = zones::heart_samples(events);
+    let mut summary = session::summarize(&strokes, &hearts, profile);
+    if let Some(s) = &mut summary {
+        s.camera = camera;
+    }
     Analysis {
-        summary: session::summarize(&strokes, &hearts, profile),
+        summary,
         orphan_points: asm.orphan_points(),
         strokes,
     }

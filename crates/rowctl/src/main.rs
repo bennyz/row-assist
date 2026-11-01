@@ -102,6 +102,12 @@ enum Command {
         plan: Option<plan::Plan>,
         #[arg(long)]
         note: Option<String>,
+        /// Also simulate the camera page's pose landmarks
+        #[arg(long)]
+        pose: bool,
+        /// Make the simulated rower row with a technique fault (implies --pose)
+        #[arg(long, value_enum)]
+        fault: Option<simulate::FaultArg>,
     },
     /// Send each CSAFE command to the PM5 on its own and show the raw reply
     Pm5Probe,
@@ -116,6 +122,13 @@ enum Command {
         #[arg(long)]
         db: Option<PathBuf>,
     },
+}
+
+/// The built frontend in the checkout this binary was built from.
+pub fn default_web_dir() -> PathBuf {
+    std::env::var_os("ROW_ASSIST_WEB")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../frontend/dist")))
 }
 
 #[tokio::main]
@@ -140,14 +153,13 @@ async fn main() -> Result<()> {
             server::serve(server::Config {
                 addr,
                 db: db.unwrap_or_else(store::paths::db_path),
-                // The checkout this binary was built from.
-                web_dir: web.unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../frontend/dist"))),
+                web_dir: web.unwrap_or_else(default_web_dir),
             })
             .await
         }
-        Command::Simulate { out, minutes, watts, spm, hr, plan, note } => simulate::run(
+        Command::Simulate { out, minutes, watts, spm, hr, plan, note, pose, fault } => simulate::run(
             &out,
-            simulate::SimArgs { minutes, watts, spm, hr, plan, note },
+            simulate::SimArgs { minutes, watts, spm, hr, plan, note, pose, fault },
         ),
         Command::Pm5Probe => probe::run().await,
         Command::ImportC2 { file, db } => history::import(&file, db).await,

@@ -8,6 +8,8 @@ use std::f64::consts::PI;
 use std::time::Duration;
 
 use model::{Clock, Device, Event, EventKind, Heart, Link, Pm5Force, Pm5Status, StrokeState};
+
+use crate::sim_pose::{Phase, PoseSim, figure, pose_frame};
 use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
@@ -23,6 +25,8 @@ pub struct SimConfig {
     /// Seconds for heart rate to climb from start to end.
     pub hr_ramp_s: f64,
     pub seed: u64,
+    /// Also simulate the camera page's pose frames.
+    pub pose: Option<PoseSim>,
 }
 
 impl Default for SimConfig {
@@ -37,6 +41,7 @@ impl Default for SimConfig {
             hr_end: 145.0,
             hr_ramp_s: 300.0,
             seed: 0x5EED,
+            pose: None,
         }
     }
 }
@@ -49,7 +54,10 @@ const POINTS_PER_POLL: usize = 2;
 /// The simulated erg and strap, advanced one poll at a time.
 pub struct Sim {
     cfg: SimConfig,
+    start_us: i64,
     rng: XorShift,
+    /// Separate, so turning pose on doesn't change the PM5 numbers.
+    pose_rng: XorShift,
     cycle_s: f64,
     drive_s: f64,
     /// m/s, from P = 2.8 v^3.
@@ -61,10 +69,13 @@ pub struct Sim {
 }
 
 impl Sim {
-    pub fn new(cfg: SimConfig) -> Self {
+    /// `start_us`: wall time of poll 0, for pose capture times.
+    pub fn new(cfg: SimConfig, start_us: i64) -> Self {
         let cycle_s = 60.0 / cfg.spm;
         Self {
+            start_us,
             rng: XorShift(cfg.seed.max(1)),
+            pose_rng: XorShift(cfg.seed.wrapping_mul(31).max(1)),
             drive_s: cycle_s * cfg.drive_fraction,
             speed: (cfg.watts / 2.80).cbrt(),
             cycle_s,
@@ -130,12 +141,38 @@ impl Sim {
                 contact: Some(true),
             }));
         }
+        if let Some(ps) = self.cfg.pose.clone() {
+            self.poses(&ps, t, &mut out);
+        }
         out
     }
 }
 
-fn links() -> impl Iterator<Item = EventKind> {
-    [Device::Pm5, Device::H10].into_iter().map(|device| {
+impl Sim {
+    /// Pose frames whose capture time falls in this poll, `[t, t + POLL)`.
+    fn poses(&mut self, ps: &PoseSim, t: f64, out: &mut Vec<EventKind>) {
+        let first = (t * ps.fps - 1e-9).ceil() as u64;
+        let end = ((t + POLL.as_secs_f64()) * ps.fps - 1e-9).ceil() as u64;
+        for k in first..end {
+            let tf = k as f64 / ps.fps;
+            // The body is ahead of the PM5 by its reporting lag.
+            let tb = tf + ps.pm5_lag_ms / 1000.0;
+            let in_cycle = tb.rem_euclid(self.cycle_s);
+            let phase = if in_cycle < self.drive_s {
+                Phase::Drive(in_cycle / self.drive_s)
+            } else {
+                Phase::Recovery((in_cycle - self.drive_s) / (self.cycle_s - self.drive_s))
+            };
+            let rng = &mut self.pose_rng;
+            let pose = pose_frame(self.start_us + (tf * 1e6) as i64, figure(phase, ps.fault), || 1.5 * rng.signed());
+            out.push(EventKind::Pose(pose));
+        }
+    }
+}
+
+fn links(pose: bool) -> impl Iterator<Item = EventKind> {
+    let camera = pose.then_some(Device::Camera);
+    [Device::Pm5, Device::H10].into_iter().chain(camera).map(|device| {
         EventKind::Link(Link {
             device,
             connected: true,
@@ -147,12 +184,12 @@ fn links() -> impl Iterator<Item = EventKind> {
 /// Stream simulated events in real time until `tx` is closed. Events are
 /// stamped with the real clock, like the real drivers'.
 pub async fn run(clock: Clock, tx: mpsc::Sender<Event>, cfg: SimConfig) {
-    for kind in links() {
+    for kind in links(cfg.pose.is_some()) {
         if tx.send(Event { t_us: clock.now_us(), kind }).await.is_err() {
             return;
         }
     }
-    let mut sim = Sim::new(cfg);
+    let mut sim = Sim::new(cfg, clock.now_us());
     let mut tick = tokio::time::interval(POLL);
     for n in 0u64.. {
         tick.tick().await;
@@ -167,8 +204,8 @@ pub async fn run(clock: Clock, tx: mpsc::Sender<Event>, cfg: SimConfig) {
 
 /// A whole simulated session at once, stamped with simulated time from `start_us`.
 pub fn generate(cfg: SimConfig, start_us: i64, duration: Duration) -> Vec<Event> {
-    let mut out: Vec<Event> = links().map(|kind| Event { t_us: start_us, kind }).collect();
-    let mut sim = Sim::new(cfg);
+    let mut out: Vec<Event> = links(cfg.pose.is_some()).map(|kind| Event { t_us: start_us, kind }).collect();
+    let mut sim = Sim::new(cfg, start_us);
     let polls = (duration.as_micros() / POLL.as_micros()) as u64;
     for n in 0..polls {
         let t_us = start_us + (n as u128 * POLL.as_micros()) as i64;
@@ -247,5 +284,28 @@ mod tests {
         let hearts = evs.iter().filter(|e| matches!(e.kind, EventKind::Heart(_))).count();
         assert_eq!(hearts, 30);
         assert_eq!(evs.last().unwrap().t_us, 1_000 + 29_950_000);
+    }
+
+    #[test]
+    fn pose_frames_at_their_own_rate_without_changing_the_pm5() {
+        let plain = generate(SimConfig::default(), 0, Duration::from_secs(10));
+        let cfg = SimConfig {
+            pose: Some(PoseSim::default()),
+            ..Default::default()
+        };
+        let with_pose = generate(cfg, 0, Duration::from_secs(10));
+        let poses: Vec<_> = with_pose
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EventKind::Pose(p) => Some(p.captured_us),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(poses.len(), 300, "30 fps for 10 s");
+        assert!(poses.windows(2).all(|w| (w[1] - w[0] - 33_333).abs() <= 1));
+        let pm5 = |evs: &[Event]| -> Vec<Event> {
+            evs.iter().filter(|e| matches!(e.kind, EventKind::Pm5Status(_) | EventKind::Pm5Force(_))).cloned().collect()
+        };
+        assert_eq!(pm5(&plain), pm5(&with_pose));
     }
 }

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::metrics::{efficiency_factor, watts_from_pace};
 use crate::strokes::{CURVE_POINTS, StrokeRecord};
+use crate::technique::{CameraView, FaultRate, fault_rates};
 use crate::zones::{HeartProfile, HeartStats, heart_stats};
 
 /// Bump when the numbers below change meaning, so stored summaries can be
@@ -111,6 +112,10 @@ pub struct Summary {
     /// Readings from first catch to end; zones and TRIMP need a profile.
     pub heart: Option<HeartStats>,
     pub profile: Option<HeartProfile>,
+    /// How the camera saw the session, when there was one.
+    pub camera: Option<CameraView>,
+    /// How often each fault showed up (camera faults only with the camera).
+    pub faults: Vec<FaultRate>,
 }
 
 /// `None` when there are no strokes.
@@ -173,6 +178,8 @@ pub fn summarize(strokes: &[StrokeRecord], hearts: &[(i64, u16)], profile: Optio
         peak_n: mean(complete.iter().filter_map(|s| s.peak_n).collect()),
         heart: heart_stats(&window, profile),
         profile: profile.copied(),
+        camera: None,
+        faults: fault_rates(strokes),
     })
 }
 
@@ -242,6 +249,8 @@ pub(crate) mod tests {
                     hr_bpm: Some(hr(i)),
                     peak_n: Some(500.0),
                     force_n: vec![],
+                    pose: None,
+                    faults: vec![],
                 }
             })
             .collect()

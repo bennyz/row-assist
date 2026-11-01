@@ -76,3 +76,14 @@ export function nearest(items, key, v) {
   }
   return Math.abs(items[hi]?.[key] - v) < Math.abs(items[lo]?.[key] - v) ? hi : lo;
 }
+
+/** Fault names as the review screen shows them (keys match analysis::technique::Fault). */
+export const FAULTS = {
+  short_compression: { label: 'Short compression', short: 'compression' },
+  shooting_slide: { label: 'Shooting the slide', short: 'slide' },
+  early_arms: { label: 'Early arms', short: 'arms' },
+  rushed_recovery: { label: 'Rushed recovery', short: 'rushed' },
+};
+
+export const faultList = (hits, form = 'label') =>
+  hits?.length ? hits.map((h) => FAULTS[h.fault]?.[form] ?? h.fault).join(', ') : '';

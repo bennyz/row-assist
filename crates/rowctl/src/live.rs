@@ -22,6 +22,7 @@ use crate::speak::Speaker;
 /// The drag factor is checked once it has settled, after this many strokes.
 const DRAG_CHECK_STROKE: u32 = 5;
 const DRAG_TOLERANCE: i16 = 5;
+const STATUS_EVERY: Duration = Duration::from_secs(5);
 
 #[derive(Args, Debug, Clone)]
 pub struct LiveArgs {
@@ -61,6 +62,12 @@ pub struct LiveArgs {
     /// Database [default: <data>/row-assist.db]
     #[arg(long)]
     db: Option<PathBuf>,
+    /// Serve the camera page and record its pose landmarks with the session
+    #[arg(long)]
+    camera: bool,
+    /// Address for the camera page (with --camera)
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    listen: std::net::SocketAddr,
 }
 
 /// Everything the live loop needs besides the devices.
@@ -169,7 +176,8 @@ pub async fn record(args: LiveArgs, out: Option<PathBuf>, note: Option<String>) 
     let coach = Coach::new(&args, ctx.as_ref());
     println!("Recording to {} (Ctrl-C to stop)", path.display());
 
-    let (writer, strokes) = run(&args, clock, Some(writer), coach).await?;
+    let pool = ctx.as_ref().map(|c| c.pool.clone());
+    let (writer, strokes) = run(&args, clock, Some(writer), coach, pool).await?;
     let Some(w) = writer else { return Ok(()) };
     let events = w.events();
     w.finish()?;
@@ -188,7 +196,8 @@ pub async fn record(args: LiveArgs, out: Option<PathBuf>, note: Option<String>) 
 pub async fn watch(args: LiveArgs) -> Result<()> {
     let ctx = open_ctx(&args).await;
     let coach = Coach::new(&args, ctx.as_ref());
-    run(&args, Clock::start(), None, coach).await.map(|_| ())
+    let pool = ctx.as_ref().map(|c| c.pool.clone());
+    run(&args, Clock::start(), None, coach, pool).await.map(|_| ())
 }
 
 /// Returns the writer (unfinished) and the number of completed strokes.
@@ -197,6 +206,7 @@ async fn run(
     clock: Clock,
     mut writer: Option<FileWriter>,
     mut coach: Coach,
+    pool: Option<store::SqlitePool>,
 ) -> Result<(Option<FileWriter>, u32)> {
     let (tx, mut rx) = mpsc::channel::<Event>(4096);
     let mut tasks = Vec::new();
@@ -217,6 +227,22 @@ async fn run(
             tasks.push(tokio::spawn(h10::run(clock, tx.clone(), cfg)));
         }
     }
+    // The camera page's frames join the same stream as the devices'.
+    let camera = if args.camera {
+        let app = server::router(pool, &crate::default_web_dir(), server::Live::into_session(clock, tx.clone()));
+        match server::listen(args.listen, app).await {
+            Ok((addr, task)) => {
+                println!("Camera page: http://{addr}/camera (open it on this machine: browsers only allow the camera on localhost)");
+                Some(task)
+            }
+            Err(e) => {
+                eprintln!("Camera page unavailable ({e:#}); is `rowctl serve` already using that port?");
+                None
+            }
+        }
+    } else {
+        None
+    };
     drop(tx);
 
     let start_us = clock.now_us();
@@ -225,7 +251,7 @@ async fn run(
         ..Default::default()
     };
     let mut asm = StrokeAssembler::new();
-    let mut ticker = tokio::time::interval(Duration::from_secs(5));
+    let mut ticker = tokio::time::interval(STATUS_EVERY);
     ticker.tick().await;
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
@@ -263,6 +289,9 @@ async fn run(
     // Closing the channel stops the device tasks; give the H10 a moment to
     // disconnect cleanly so the strap is free for the PM5 or phone.
     drop(rx);
+    if let Some(task) = camera {
+        task.abort();
+    }
     for task in tasks {
         let _ = tokio::time::timeout(Duration::from_secs(3), task).await;
     }
@@ -276,6 +305,9 @@ struct View {
     pm5_link: Option<bool>,
     h10_link: Option<bool>,
     bpm: Option<u16>,
+    camera_link: Option<bool>,
+    /// Pose frames since the last status line.
+    poses: u32,
     events: u64,
     strokes: u32,
 }
@@ -287,11 +319,12 @@ impl View {
         match &ev.kind {
             EventKind::Pm5Status(s) => self.pm5 = Some(s.clone()),
             EventKind::Heart(h) => self.bpm = Some(h.bpm),
+            EventKind::Pose(_) => self.poses += 1,
             EventKind::Link(link) => {
                 let (slot, name) = match link.device {
                     Device::Pm5 => (&mut self.pm5_link, "PM5"),
                     Device::H10 => (&mut self.h10_link, "H10"),
-                    Device::Camera => return None,
+                    Device::Camera => (&mut self.camera_link, "Camera page"),
                 };
                 // Announce changes, not every failed reconnect attempt.
                 if *slot == Some(link.connected) {
@@ -307,7 +340,8 @@ impl View {
         None
     }
 
-    fn status_line(&self, elapsed_us: i64) -> String {
+    /// Call every `STATUS_EVERY`.
+    fn status_line(&mut self, elapsed_us: i64) -> String {
         let pm5 = match (self.pm5_link, &self.pm5) {
             (Some(true), Some(s)) => format!(
                 "PM5 {} {} spm {} W {} m DF {}",
@@ -328,8 +362,13 @@ impl View {
             (Some(true), None) => "HR …".into(),
             _ => "HR –".into(),
         };
+        let cam = match self.camera_link {
+            Some(true) => format!(" | cam {:.0} fps", self.poses as f64 / STATUS_EVERY.as_secs_f64()),
+            _ => String::new(),
+        };
+        self.poses = 0;
         format!(
-            "[{}] {pm5} | {hr} | {} strokes, {} events",
+            "[{}] {pm5} | {hr}{cam} | {} strokes, {} events",
             clock(elapsed_us as f64 / 1e6),
             self.strokes,
             self.events

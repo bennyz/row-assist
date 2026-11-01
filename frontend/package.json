@@ -4,13 +4,16 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/fetch-mediapipe.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/fetch-mediapipe.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
     "@fontsource/chakra-petch": "^5.2.5",
-    "@fontsource/hanken-grotesk": "^5.2.5"
+    "@fontsource/hanken-grotesk": "^5.2.5",
+    "@mediapipe/tasks-vision": "^1.2.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.2.1",

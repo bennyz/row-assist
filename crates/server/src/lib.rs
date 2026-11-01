@@ -1,4 +1,5 @@
-//! HTTP server: a JSON API over stored sessions, and the built frontend.
+//! HTTP server: a JSON API over stored sessions, the camera WebSocket, and
+//! the built frontend.
 //!
 //! The API hands the browser view-ready data (per-stroke rate and work, the
 //! session's mean force curve, zone bands) so that interpretation stays in
@@ -9,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use analysis::session::{self, Summary};
 use analysis::strokes::StrokeRecord;
+use analysis::technique::{self, FaultHit, Figure, StrokePose};
 use anyhow::{Context, Result};
 use axum::Json;
 use axum::Router;
@@ -22,6 +24,9 @@ use store::sessions::SessionRow;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::error;
 
+pub mod camera;
+pub use camera::Live;
+
 pub struct Config {
     pub addr: SocketAddr,
     pub db: PathBuf,
@@ -29,36 +34,53 @@ pub struct Config {
     pub web_dir: PathBuf,
 }
 
-/// Serve until Ctrl-C.
+/// Serve review and camera setup (nothing recorded) until Ctrl-C.
 pub async fn serve(cfg: Config) -> Result<()> {
     let pool = store::db::open(&cfg.db).await?;
-    let app = router(pool, &cfg.web_dir);
-    let listener = tokio::net::TcpListener::bind(cfg.addr)
-        .await
-        .with_context(|| format!("listen on {}", cfg.addr))?;
-    println!("Row Assist on http://{} (Ctrl-C to stop)", listener.local_addr()?);
+    let app = router(Some(pool), &cfg.web_dir, Live::setup_only(model::Clock::start()));
+    let (addr, task) = listen(cfg.addr, app).await?;
+    println!("Row Assist on http://{addr} (Ctrl-C to stop)");
     if !cfg.web_dir.join("index.html").is_file() {
         println!("Frontend not built ({}): only the API is up", cfg.web_dir.display());
     }
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
+    let _ = tokio::signal::ctrl_c().await;
+    task.abort();
     Ok(())
 }
 
-pub fn router(pool: SqlitePool, web_dir: &Path) -> Router {
-    let api = Router::new()
-        .route("/api/sessions", get(list_sessions))
-        .route("/api/sessions/{id}", get(session_detail))
-        .with_state(pool);
+/// Bind and serve in the background. Returns the bound address (useful with port 0).
+pub async fn listen(addr: SocketAddr, app: Router) -> Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("listen on {addr}"))?;
+    let bound = listener.local_addr()?;
+    let task = tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, app).await {
+            error!("server: {e:#}");
+        }
+    });
+    Ok((bound, task))
+}
+
+/// `pool`: the session API, when a database is available.
+pub fn router(pool: Option<SqlitePool>, web_dir: &Path, live: Live) -> Router {
+    let mut app = Router::new()
+        .route("/ws/camera", get(camera::upgrade))
+        .with_state(live);
+    if let Some(pool) = pool {
+        app = app.merge(
+            Router::new()
+                .route("/api/sessions", get(list_sessions))
+                .route("/api/sessions/{id}", get(session_detail))
+                .with_state(pool),
+        );
+    }
     let index = web_dir.join("index.html");
     if index.is_file() {
         // Unknown paths get index.html, so the app's own routes survive a reload.
-        api.fallback_service(ServeDir::new(web_dir).fallback(ServeFile::new(index)))
+        app.fallback_service(ServeDir::new(web_dir).fallback(ServeFile::new(index)))
     } else {
-        api.fallback(not_built)
+        app.fallback(not_built)
     }
 }
 
@@ -129,6 +151,8 @@ pub struct StrokeView {
     pub peak_n: Option<f64>,
     pub drag_factor: Option<u8>,
     pub force_n: Vec<f64>,
+    pub pose: Option<StrokePose>,
+    pub faults: Vec<FaultHit>,
 }
 
 impl StrokeView {
@@ -148,6 +172,8 @@ impl StrokeView {
             peak_n: s.peak_n,
             drag_factor: s.drag_factor,
             force_n: s.force_n.clone(),
+            pose: s.pose.clone(),
+            faults: s.faults.clone(),
         }
     }
 }
@@ -171,6 +197,9 @@ pub struct SessionDetail {
     pub weakest: Option<u32>,
     /// Bands of the heart profile the session was analysed with.
     pub zones: Vec<ZoneBand>,
+    /// The session's median catch and finish figures (empty without a camera).
+    pub typical_catch: Figure,
+    pub typical_finish: Figure,
 }
 
 async fn list_sessions(State(pool): State<SqlitePool>) -> Result<Json<Vec<SessionItem>>, ApiError> {
@@ -187,6 +216,7 @@ async fn session_detail(
     let strokes = store::sessions::session_strokes(&pool, id).await?;
     let start = row.summary.started_at_us;
     let extremes = session::work_extremes(&strokes);
+    let (typical_catch, typical_finish) = technique::typical_figures(&strokes);
     let zones = row
         .summary
         .profile
@@ -204,6 +234,8 @@ async fn session_detail(
         weakest: extremes.map(|e| e.1),
         strokes: strokes.iter().map(|s| StrokeView::new(s, start)).collect(),
         zones,
+        typical_catch,
+        typical_finish,
         summary: row.summary,
     }))
 }
@@ -269,6 +301,8 @@ mod tests {
             hr_bpm: Some(140.0),
             peak_n: Some(500.0),
             force_n: vec![],
+            pose: None,
+            faults: vec![],
         }
     }
 
@@ -305,7 +339,7 @@ mod tests {
         };
         let strokes: Vec<_> = (0..5).map(|i| stroke(i, start)).collect();
         let id = save_session(&pool, &meta, &summary, &strokes).await.unwrap();
-        let app = router(pool, &dir.join("no-frontend"));
+        let app = router(Some(pool), &dir.join("no-frontend"), Live::setup_only(model::Clock::start()));
 
         let (status, list) = get(app.clone(), "/api/sessions").await;
         assert_eq!(status, StatusCode::OK);
@@ -335,7 +369,7 @@ mod tests {
         let web = dir.join("dist");
         std::fs::create_dir_all(&web).unwrap();
         std::fs::write(web.join("index.html"), "<!doctype html><p>app</p>").unwrap();
-        let app = router(pool, &web);
+        let app = router(Some(pool), &web, Live::setup_only(model::Clock::start()));
         for uri in ["/", "/sessions/4"] {
             let res = app
                 .clone()
@@ -347,5 +381,95 @@ mod tests {
             assert!(body.starts_with(b"<!doctype html><p>app"), "{uri}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    mod ws {
+        use futures::{SinkExt, StreamExt};
+        use model::{Clock, Device, EventKind};
+        use tokio::sync::mpsc;
+        use tokio_tungstenite::connect_async;
+        use tokio_tungstenite::tungstenite::Message;
+
+        use super::super::*;
+
+        async fn next_json(
+            ws: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin),
+        ) -> serde_json::Value {
+            loop {
+                match ws.next().await.unwrap().unwrap() {
+                    Message::Text(t) => return serde_json::from_str(&t).unwrap(),
+                    _ => continue,
+                }
+            }
+        }
+
+        fn frame(t_us: i64) -> String {
+            // Seated side-on, left side to the camera (as the pose tests build it).
+            let near: Vec<[f32; 3]> = [
+                (560.0, 250.0), (560.0, 300.0), (640.0, 380.0), (720.0, 460.0), (480.0, 500.0),
+                (700.0, 360.0), (700.0, 560.0), (680.0, 580.0), (760.0, 580.0),
+            ]
+            .iter()
+            .map(|&(x, y): &(f32, f32)| [x / 1280.0, y / 720.0, 0.95])
+            .collect();
+            let far: Vec<[f32; 3]> = near.iter().map(|&[x, y, _]| [x + 0.008, y, 0.6]).collect();
+            let points = [near, far].concat();
+            serde_json::json!({"t": t_us, "w": 1280, "h": 720, "p": points}).to_string()
+        }
+
+        #[tokio::test]
+        async fn frames_are_recorded_and_framing_comes_back() {
+            let dir = std::env::temp_dir().join(format!("row-assist-ws-{}", std::process::id()));
+            let (tx, mut rx) = mpsc::channel(256);
+            let clock = Clock::start();
+            let app = router(None, &dir, Live::into_session(clock, tx));
+            let (addr, server) = listen("127.0.0.1:0".parse().unwrap(), app).await.unwrap();
+
+            let (mut ws, _) = connect_async(format!("ws://{addr}/ws/camera")).await.unwrap();
+            assert_eq!(next_json(&mut ws).await["recording"], true);
+
+            // A second page is turned away while the first is connected.
+            let (mut other, _) = connect_async(format!("ws://{addr}/ws/camera")).await.unwrap();
+            assert_eq!(next_json(&mut other).await["type"], "error");
+
+            let t0 = clock.now_us();
+            for i in 0..30 {
+                ws.send(Message::Text(frame(t0 + i * 33_333).into())).await.unwrap();
+            }
+            ws.send(Message::Text("garbage".into())).await.unwrap();
+
+            // Framing replies arrive every 500 ms; wait for one that has seen the frames.
+            let framing = loop {
+                let m = next_json(&mut ws).await;
+                if m["type"] == "framing" && m["frames"] == 30 {
+                    break m;
+                }
+            };
+            assert_eq!(framing["side"], "left");
+            assert_eq!(framing["ok"], true, "{framing:#}");
+
+            ws.close(None).await.unwrap();
+            let mut poses = 0;
+            let mut links = vec![];
+            while let Some(ev) = rx.recv().await {
+                match ev.kind {
+                    EventKind::Pose(p) => {
+                        assert_eq!(p.points.len(), 18);
+                        poses += 1;
+                    }
+                    EventKind::Link(l) => {
+                        assert_eq!(l.device, Device::Camera);
+                        links.push(l.connected);
+                        if !l.connected {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(poses, 30, "the garbage frame is skipped");
+            assert_eq!(links, vec![true, false]);
+            server.abort();
+        }
     }
 }

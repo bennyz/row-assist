@@ -10,6 +10,8 @@
   --accent: #e7a13c;
   --accent-wash: rgb(231 161 60 / 0.1);
   --mean: #6e7c88;
+  /* Status only (never a data series): 6:1 on --surface. */
+  --bad: #e2725b;
   /* Heart-rate zones Z0–Z5: one hue, monotone lightness (ordinal). */
   --z0: #7a4400;
   --z1: #965e00;

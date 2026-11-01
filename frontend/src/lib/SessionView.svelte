@@ -1,6 +1,8 @@
 <script>
   import { getSession } from './api.js';
-  import { clock, dateLabel, fixed, grouped, pace, timeLabel } from './format.js';
+  import { clock, dateLabel, faultList, fixed, grouped, pace, timeLabel } from './format.js';
+  import FaultRates from './FaultRates.svelte';
+  import Figures from './Figures.svelte';
   import ForceCurve from './ForceCurve.svelte';
   import StrokeCharts from './StrokeCharts.svelte';
   import StrokeTable from './StrokeTable.svelte';
@@ -124,10 +126,28 @@
             <div><dt>drive</dt><dd class="num">{fixed(stroke.drive_ms == null ? null : stroke.drive_ms / 1000, 2)} s</dd></div>
             <div><dt>peak</dt><dd class="num">{fixed(stroke.peak_n)} N</dd></div>
             <div><dt>HR</dt><dd class="num">{fixed(stroke.hr)}</dd></div>
+            <div><dt>faults</dt><dd>{faultList(stroke.faults) || 'none'}</dd></div>
           </dl>
         {/if}
       </div>
     </section>
+
+    {#if s.faults?.length}
+      <section>
+        <h2>Technique</h2>
+        <FaultRates rates={s.faults} camera={!!s.camera} />
+        {#if s.camera}
+          <div class="figures">
+            <Figures {stroke} typicalCatch={detail.typical_catch} typicalFinish={detail.typical_finish} />
+          </div>
+          <p class="muted cam">
+            Camera: {s.camera.side} side{s.camera.offset_ms != null
+              ? `, synced to the PM5 (${fixed(s.camera.offset_ms)} ms)`
+              : ', not synced'}{Math.abs(s.camera.tilt_deg) >= 0.5 ? `, levelled ${fixed(s.camera.tilt_deg, 1)}°` : ''}
+          </p>
+        {/if}
+      </section>
+    {/if}
 
     <section>
       <StrokeTable strokes={detail.strokes} bind:selected />
@@ -265,7 +285,14 @@
     text-align: right;
   }
   .error {
-    color: var(--z4);
+    color: var(--bad);
+  }
+  .figures {
+    margin-top: 1.75rem;
+  }
+  .cam {
+    font-size: 13px;
+    margin: 1rem 0 0;
   }
   @media (max-width: 760px) {
     .curve {

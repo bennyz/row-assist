@@ -117,14 +117,14 @@ once, advanced monotonically).
 | `Link` | done | device connected / dropped, with name or error |
 | `Marker` | done | user annotation (deliberate-fault fixtures) |
 | `H10Accel` | planned | chest accelerometer samples |
-| `Pose` | planned | capture time + near-side landmarks (x, y, visibility) |
+| `Pose` | done | capture time (browser clock), frame size, 9 joints × both sides as `[x, y, visibility]` (`model::POSE_JOINTS`) |
 | coach/control | planned | session start/stop, focus chosen, cue spoken |
 
 Session files (`crates/recording`): the 8-byte magic `ROWREC01`, then a zstd stream of
 length-prefixed **MessagePack** frames with structs encoded as maps, so an optional field
 can be added later without breaking old recordings. The writer flushes every second
 (a crash loses ≤ 1 s) and the reader stops cleanly at a truncated tail. 12 s of simulated
-PM5 + HR is 3.4 KB; pose frames will dominate size later. `rowctl dump` prints JSON lines.
+PM5 + HR is 3.4 KB; with 30 fps pose a 20-min row is ~6 MB (simulated), almost all pose. Quantising landmarks to u16 would roughly halve that if it matters. `rowctl dump` prints JSON lines.
 
 ### 4.3 Stroke record
 
@@ -166,19 +166,32 @@ analysis: `rowctl analyze --all` rebuilds them from the recordings.
 ### 4.4 Time alignment
 
 - Server and camera page run on the same Mac, so they share a wall clock. The browser
-  stamps frames with `performance.timeOrigin + performance.now()`.
-- A residual offset remains (camera latency, PM5 reporting delay). **Auto-calibrate** over the
-  first ~20 strokes: align the camera-detected catch (wrist at its most forward point) with the
-  PM5 drive start; store the median offset for the session.
+  stamps each frame with its capture time (`performance.timeOrigin` + the video frame's
+  `captureTime`); the server also stamps arrival.
+- A residual offset remains (camera latency, clock skew, the PM5's own detection delay).
+  **Auto-calibrated** (`analysis::technique::sync_offset`) over strokes 4–23: the camera catch
+  is the frame with the wrist furthest forward within −600/+300 ms of the PM5 drive start; the
+  median difference is the session offset. Built; on the kinematic rower it recovers a
+  simulated 60 ms lag within half a frame.
+- No sub-frame peak fitting: the catch is lopsided (the drive leaves it ~5× faster than the
+  recovery arrives), which drags a fitted parabola's peak toward the recovery by up to half a
+  frame. The best frame alone has no bias.
 
 ### 4.5 Camera geometry
+
+Built in `analysis::pose`; the camera page shows a live setup check from it (fps, person,
+whole body in view, side-on, size in frame, landmark clarity).
 
 - **Near side**: auto-detected from landmark visibility; only near-side joints are used.
 - **Free horizon**: the hip slides along a level rail, so the hip path across a stroke is a
   horizontal line. Its slope gives camera tilt, corrected before computing angles.
 - **Scale**: distances are normalised by thigh length (hip–knee) so camera distance doesn't matter.
-- Angles: trunk = hip→shoulder vs vertical (+ forward); shin = ankle→knee vs vertical;
-  knee = hip–knee–ankle; elbow = shoulder–elbow–wrist.
+- Angles: trunk = hip→shoulder vs vertical (+ toward the feet); shin = ankle→knee vs vertical
+  (+ knee toward the hips); knee = hip–knee–ankle; hip = shoulder–hip–knee; elbow =
+  shoulder–elbow–wrist. Signs are relative to where the feet are, so either side to the camera
+  gives the same numbers.
+- Stroke figures (catch, finish) are stored in thigh lengths from the hip, for the review
+  screen's stick figures and later the mirror.
 
 ---
 
@@ -200,6 +213,13 @@ Ordered by what makes a stroke weak, which is what the baseline points to.
 | 8 | **Force curve shape** | Double hump / mid-drive dip; peak very early or late; low stroke-to-stroke similarity | PM5 | review screen only |
 
 Thresholds start from common coaching norms and are tuned against recorded sessions.
+**Built (`analysis::technique`):** 1 = shin > 12° from vertical at the camera catch; 2 = trunk
+tips forward > 6° past its catch angle in the first third of the drive (if the hips leave and
+the handle doesn't, the trunk must tip: cleaner than comparing hip and wrist travel); 3 = elbow
+< 160° while the knee is still < 150°; 4 = recovery/drive < 1.5 at ≤ 24 spm (PM5 only, no
+camera needed). Each is tested against the simulator's kinematic rower
+(`rowctl simulate --fault early-arms` etc.): the injected fault is found on > 90% of strokes
+and nothing fires on clean rowing. Real deliberately-rowed fixtures are still to come.
 Every fault has a matching drill (legs-only, pick drill, pause at hands-away, rate ladder).
 
 ### 5.2 Coach behaviour
@@ -380,7 +400,7 @@ Each phase ends with something usable on the erg.
 |---|---|---|
 | **0. Foundations** | workspace; event model; PM5 driver port + drag factor + **force curve spike**; H10 HR + RR; recorder, replay, dump; Concept2 CSV importer | a real row is recorded, replayed, and its force curves dumped; the CSV is in SQLite. *Status: code done and verified with the simulator; CSV imported. Waiting on hardware: `pm5-probe`, then a real `record`.* |
 | **1. Effort** | stroke assembler; session persistence; zones, TRIMP, EF, decoupling, watts at 20; drag-factor check; review screen; audio zone cues; reference-row comparison | comeback-ramp sessions are rowed with the app. *Status: built: `rowctl record --plan … --speak`, `analyze`, `sessions`, `profile`, `simulate`, and the review screen (`rowctl serve`). Waiting on the first real comeback-ramp rows.* |
-| **2. Posture** | camera page; framing check; near-side + horizon + scale; sync auto-calibration; joint angles; faults 1–4; one-focus coach; **mirror on the front screen**; deliberate-fault fixtures | the coach flags deliberately rowed faults and stays quiet on clean strokes |
+| **2. Posture** | camera page; framing check; near-side + horizon + scale; sync auto-calibration; joint angles; faults 1–4; one-focus coach; **mirror on the front screen**; deliberate-fault fixtures | the coach flags deliberately rowed faults and stays quiet on clean strokes. *Status: built: camera page (`rowctl record --camera`), setup check, near side, tilt, scale, sync, joint angles, faults 1–4, technique on the review screen, a kinematic rower in the simulator. Next: spoken fault cues (one-focus coach), the mirror, real fixtures and threshold tuning.* |
 | **3. Readiness** | Shortcut endpoint; baselines; readiness on setup screen; Karvonen zones from Watch resting HR | a week of Watch data shows up and changes the zones |
 | **4. Improvement loop** | planner; PM5 workout programming; progress screen; form under fatigue; benchmarks | the app proposes next session + focus and loads it onto the PM5 |
 | **Later** | H10 accelerometer; faults 5–8; front camera view (symmetry); optional video capture for review; Concept2 Logbook API sync (incl. stroke data if present); weekly written summary | — |

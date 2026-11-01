@@ -257,6 +257,8 @@ mod tests {
             hr_bpm: Some(140.0),
             peak_n: Some(500.0),
             force_n: vec![1.0, 2.0],
+            pose: None,
+            faults: vec![],
         }
     }
 

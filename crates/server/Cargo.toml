@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+model.workspace = true
 analysis.workspace = true
 store.workspace = true
 anyhow.workspace = true
@@ -18,3 +19,5 @@ tower-http.workspace = true
 
 [dev-dependencies]
 tower.workspace = true
+tokio-tungstenite.workspace = true
+futures.workspace = true
