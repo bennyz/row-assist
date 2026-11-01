@@ -95,7 +95,8 @@ pub enum FocusArg {
 }
 
 impl FocusArg {
-    /// The flag value that selects `fault`.
+    /// The flag value that selects `fault` (checked against `Fault::flag`).
+    #[cfg(test)]
     pub fn flag(fault: Fault) -> String {
         let arg = match fault {
             Fault::ShortCompression => Self::ShortCompression,

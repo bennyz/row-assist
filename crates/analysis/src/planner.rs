@@ -73,6 +73,35 @@ pub struct Proposal {
     pub why: Vec<String>,
 }
 
+impl Proposal {
+    /// The `rowctl record` command that rows it.
+    pub fn command(&self) -> String {
+        let preset = match self.kind {
+            Kind::Reference => "reference",
+            Kind::Easy | Kind::Minimum => "easy",
+            Kind::Steady => "steady",
+            Kind::Rate20Test => "rate20",
+            Kind::RateSteps => "rate-steps",
+        };
+        let mut cmd = format!("rowctl record --plan {preset} --speak");
+        if !matches!(self.kind, Kind::Reference | Kind::Rate20Test | Kind::RateSteps) {
+            cmd += &format!(" --minutes {}", self.minutes.1);
+        }
+        if let Some(f) = self.focus {
+            cmd += &format!(" --focus {}", f.flag());
+            if f.needs_camera() {
+                cmd += " --camera";
+            }
+        }
+        cmd
+    }
+
+    /// What to set on the PM5 by hand, when the workout has structure.
+    pub fn pm5_setup(&self) -> Option<&'static str> {
+        (self.kind == Kind::RateSteps).then_some("intervals 4 × 5:00 work / 2:00 rest; rate 20, 22, 24, 22")
+    }
+}
+
 /// Rows shorter than this are warm-ups or false starts.
 pub const MIN_ROW_MINUTES: f64 = 10.0;
 /// A gap longer than this starts over with a reference row.
@@ -293,6 +322,15 @@ mod tests {
         assert_eq!(p.phase, Phase::EasyWeek);
         assert!(matches!(p.kind, Kind::Easy | Kind::Steady));
         assert!(p.why.iter().any(|w| w.contains("14 days since")));
+    }
+
+    #[test]
+    fn commands() {
+        let p = propose(&[], TODAY, Level::Green, Some(Fault::EarlyArms));
+        assert_eq!(p.command(), "rowctl record --plan reference --speak --focus early-arms --camera");
+        let rows = [reference(TODAY - 14, Ramp::OneWeek), row(TODAY - 2, Some("steady"))];
+        let p = propose(&rows, TODAY, Level::Red, Some(Fault::RushedRecovery));
+        assert_eq!(p.command(), "rowctl record --plan easy --speak --minutes 20 --focus rushed-recovery");
     }
 
     #[test]

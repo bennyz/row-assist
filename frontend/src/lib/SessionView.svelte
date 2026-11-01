@@ -94,6 +94,18 @@
       </dl>
     {/if}
 
+    {#if detail.reference}
+      {@const r = detail.reference}
+      <p class="reference">
+        {#if r.high != null}
+          EF <strong class="num">{fixed(r.ef, 3)}</strong> vs {r.pieces} past steady pieces at
+          {fixed(r.watts_band[0])}–{fixed(r.watts_band[1])} W: best {fixed(r.high, 3)}, worst {fixed(r.low, 3)}{#if r.ramp}{' '}<span class="ramp">→ {r.ramp}</span>{/if}
+        {:else}
+          <span class="muted">{r.note}</span>
+        {/if}
+      </p>
+    {/if}
+
     {#if s.heart?.zone_s?.length}
       <section>
         <h2>Heart-rate zones</h2>
@@ -289,6 +301,17 @@
   }
   .figures {
     margin-top: 1.75rem;
+  }
+  .reference {
+    margin: 0.9rem 0 0;
+    font-size: 14px;
+    color: var(--ink-2);
+  }
+  .reference strong {
+    color: var(--ink);
+  }
+  .ramp {
+    color: var(--ink);
   }
   .cam {
     font-size: 13px;

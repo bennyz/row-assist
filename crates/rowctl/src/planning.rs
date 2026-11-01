@@ -50,26 +50,22 @@ pub async fn run(args: PlanArgs) -> Result<()> {
         println!("  Focus: {} (\"{}\")", f.label(), f.cue());
     }
 
-    let preset = match p.kind {
-        Kind::Reference => "reference",
-        Kind::Easy | Kind::Minimum => "easy",
-        Kind::Steady => "steady",
-        Kind::Rate20Test => "rate20",
-        Kind::RateSteps => "rate-steps",
-    };
-    let mut cmd = format!("rowctl record --plan {preset} --speak");
-    if !matches!(p.kind, Kind::Reference | Kind::Rate20Test | Kind::RateSteps) {
-        cmd += &format!(" --minutes {hi}");
+    if let Some(setup) = p.pm5_setup() {
+        println!("\nSet on the PM5: {setup}.");
     }
-    if let Some(f) = p.focus {
-        cmd += &format!(" --focus {}", crate::live::FocusArg::flag(f));
-        if f.needs_camera() {
-            cmd += " --camera";
+    println!("\nRow it with: {}", p.command());
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use analysis::technique::Fault;
+
+    /// The planner's commands must parse: its focus names match the CLI's.
+    #[test]
+    fn focus_flags_match_the_cli() {
+        for f in Fault::ALL {
+            assert_eq!(crate::live::FocusArg::flag(f), f.flag());
         }
     }
-    if p.kind == Kind::RateSteps {
-        println!("\nSet on the PM5: intervals 4 × 5:00 work / 2:00 rest; rate 20, 22, 24, 22.");
-    }
-    println!("\nRow it with: {cmd}");
-    Ok(())
 }

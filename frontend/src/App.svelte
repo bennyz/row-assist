@@ -6,6 +6,7 @@
   import MirrorPage from './lib/MirrorPage.svelte';
   import Readiness from './lib/Readiness.svelte';
   import ProgressPage from './lib/ProgressPage.svelte';
+  import Today from './lib/Today.svelte';
 
   let sessions = $state([]);
   let current = $state(null);
@@ -53,6 +54,7 @@
   <aside>
     <div class="brand">Row Assist</div>
     <Readiness />
+    <Today />
     <a
       class="nav"
       class:here={onProgress}

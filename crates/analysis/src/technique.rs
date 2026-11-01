@@ -69,6 +69,16 @@ impl Fault {
         }
     }
 
+    /// The `--focus` value that selects it on the command line.
+    pub fn flag(self) -> &'static str {
+        match self {
+            Self::ShortCompression => "short-compression",
+            Self::ShootingSlide => "shooting-slide",
+            Self::EarlyArms => "early-arms",
+            Self::RushedRecovery => "rushed-recovery",
+        }
+    }
+
     /// Needs the camera (the others come from the PM5 alone).
     pub fn needs_camera(self) -> bool {
         !matches!(self, Self::RushedRecovery)

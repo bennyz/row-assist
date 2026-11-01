@@ -11,3 +11,4 @@ export const listSessions = () => getJson('/api/sessions');
 export const getSession = (id) => getJson(`/api/sessions/${id}`);
 export const getHealth = () => getJson('/api/health');
 export const getProgress = () => getJson('/api/progress');
+export const getToday = () => getJson('/api/today');

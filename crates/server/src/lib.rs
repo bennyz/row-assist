@@ -28,6 +28,7 @@ pub mod camera;
 pub mod health;
 pub mod live;
 pub mod progress;
+pub mod today;
 pub use camera::Live;
 
 pub struct Config {
@@ -95,6 +96,7 @@ pub fn router(api: Option<Api>, web_dir: &Path, live: Live) -> Router {
                 .route("/api/sessions/{id}", get(session_detail))
                 .route("/api/health", get(health::get))
                 .route("/api/progress", get(progress::get))
+                .route("/api/today", get(today::get))
                 .route("/api/health/daily", axum::routing::post(health::post))
                 .with_state(api),
         );
@@ -224,6 +226,67 @@ pub struct SessionDetail {
     /// The session's median catch and finish figures (empty without a camera).
     pub typical_catch: Figure,
     pub typical_finish: Figure,
+    /// EF against past steady pieces at similar power (steady rows of 15+ min).
+    pub reference: Option<ReferenceView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReferenceView {
+    pub ef: Option<f64>,
+    pub watts: Option<f64>,
+    /// The power band past pieces were taken from.
+    pub watts_band: Option<(f64, f64)>,
+    /// Mean EF of the best and worst comparable pieces.
+    pub high: Option<f64>,
+    pub low: Option<f64>,
+    pub pieces: usize,
+    /// The comeback-ramp verdict, for a reference row.
+    pub ramp: Option<String>,
+    /// Why there's no comparison, when there isn't.
+    pub note: Option<String>,
+}
+
+async fn reference_view(pool: &SqlitePool, row: &SessionRow) -> anyhow::Result<Option<ReferenceView>> {
+    use analysis::reference::{MIN_MINUTES, MIN_PIECES, Outcome, WATTS_WINDOW, compare};
+    let band = |w: f64| Some((w - WATTS_WINDOW, w + WATTS_WINDOW));
+    let is_reference = row.meta.plan.as_deref() == Some("reference");
+    if !is_reference && row.summary.whole.seconds < MIN_MINUTES * 60.0 {
+        return Ok(None);
+    }
+    let history = store::history::pieces(pool, row.summary.started_at_us).await?;
+    Ok(match compare(&row.summary.whole, &history) {
+        Outcome::Compared(c) => Some(ReferenceView {
+            ef: Some(c.ef),
+            watts: Some(c.watts),
+            watts_band: band(c.watts),
+            high: Some(c.high),
+            low: Some(c.low),
+            pieces: c.pieces.len(),
+            ramp: is_reference.then(|| c.ramp.describe().to_string()),
+            note: None,
+        }),
+        Outcome::NoBaseline { ef, watts, pieces } => Some(ReferenceView {
+            ef: Some(ef),
+            watts: Some(watts),
+            watts_band: band(watts),
+            high: None,
+            low: None,
+            pieces,
+            ramp: None,
+            note: Some(format!("only {pieces} past steady pieces near {watts:.0} W; {MIN_PIECES} needed to compare")),
+        }),
+        Outcome::NotSteady(why) if is_reference => Some(ReferenceView {
+            ef: None,
+            watts: None,
+            watts_band: None,
+            high: None,
+            low: None,
+            pieces: 0,
+            ramp: None,
+            note: Some(format!("not usable as a reference row: {why}")),
+        }),
+        Outcome::NotSteady(_) => None,
+    })
 }
 
 async fn list_sessions(State(api): State<Api>) -> Result<Json<Vec<SessionItem>>, ApiError> {
@@ -242,6 +305,7 @@ async fn session_detail(
     let start = row.summary.started_at_us;
     let extremes = session::work_extremes(&strokes);
     let (typical_catch, typical_finish) = technique::typical_figures(&strokes);
+    let reference = reference_view(pool, &row).await?;
     let zones = row
         .summary
         .profile
@@ -261,6 +325,7 @@ async fn session_detail(
         zones,
         typical_catch,
         typical_finish,
+        reference,
         summary: row.summary,
     }))
 }
@@ -388,6 +453,9 @@ mod tests {
         assert_eq!(d["strokes"][3]["rate"], Value::Null, "spans a 20 s pause");
         assert_eq!(d["recording"], "/x.rowrec");
 
+        let (status, t) = get(app.clone(), "/api/today").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(t["command"].as_str().unwrap().starts_with("rowctl record --plan"));
         let (status, p) = get(app.clone(), "/api/progress").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(p["weeks"][0]["rows"], 1, "the one saved session");

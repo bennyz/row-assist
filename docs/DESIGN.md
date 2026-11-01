@@ -409,8 +409,10 @@ Visual language from `.impeccable.md`: dark, instrument-panel, amber accent, Cha
    spm, HR, EF) and secondary numbers; time in zones as a segmented bar; power, rate and HR per
    stroke as small multiples on one time axis with a shared crosshair; the selected stroke's
    force curve against the session mean, with jumps to the most- and least-work strokes; every
-   stroke as a table. Amber always means "the selected stroke". Phase 2 adds joint angles and
-   stick figures at catch/finish.
+   stroke as a table. Amber always means "the selected stroke". Steady rows of 15+ min show
+   their EF against past pieces at similar power, and a reference row its ramp verdict. The
+   sidebar carries readiness and **Today** (the planner's session, reasons and the command
+   to copy; `/api/today`).
 4. **Progress** (built: `/progress`, `analysis::progress`): watts at 20 against the 100 W
    milestone (app strokes at 19.5–20.5 spm; logbook pieces averaged at 20 spm, shown faint),
    EF of comparable steady rows (≥ 15 min, 16–22 spm, 43–63 W only: EF climbs with power),
