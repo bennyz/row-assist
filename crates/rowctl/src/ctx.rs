@@ -35,12 +35,7 @@ impl Ctx {
 
     /// Heart profile with estimates filling what isn't set.
     pub fn heart(&self) -> Option<(HeartProfile, Source, Source)> {
-        HeartProfile::resolve(
-            self.profile.hr_rest.map(f64::from),
-            self.profile.hr_max.map(f64::from),
-            self.age.map(|a| a as f64),
-            self.profile.sex,
-        )
+        self.profile.heart(self.age)
     }
 
     /// "HRrest 60 (assumed), HRmax 184 (from age 35)".

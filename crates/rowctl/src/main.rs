@@ -74,6 +74,17 @@ enum Command {
     },
     /// Show or set heart-rate profile and drag factor target
     Profile(profile::ProfileArgs),
+    /// Serve the review screen in the browser
+    Serve {
+        /// Address to listen on (0.0.0.0:8080 to reach it from another machine)
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        addr: std::net::SocketAddr,
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Built frontend [default: frontend/dist in this checkout]
+        #[arg(long, env = "ROW_ASSIST_WEB")]
+        web: Option<PathBuf>,
+    },
     /// Write a simulated session to a recording, instantly (for testing)
     Simulate {
         #[arg(long)]
@@ -125,6 +136,15 @@ async fn main() -> Result<()> {
         Command::Analyze { files, all, no_save, db } => review::analyze(files, all, no_save, db).await,
         Command::Sessions { db } => review::sessions(db).await,
         Command::Profile(args) => profile::run(args).await,
+        Command::Serve { addr, db, web } => {
+            server::serve(server::Config {
+                addr,
+                db: db.unwrap_or_else(store::paths::db_path),
+                // The checkout this binary was built from.
+                web_dir: web.unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../frontend/dist"))),
+            })
+            .await
+        }
         Command::Simulate { out, minutes, watts, spm, hr, plan, note } => simulate::run(
             &out,
             simulate::SimArgs { minutes, watts, spm, hr, plan, note },

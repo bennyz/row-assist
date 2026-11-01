@@ -11,6 +11,7 @@ devices.workspace = true
 recording.workspace = true
 analysis.workspace = true
 store.workspace = true
+server.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 clap.workspace = true

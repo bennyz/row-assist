@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::metrics::{efficiency_factor, watts_from_pace};
-use crate::strokes::StrokeRecord;
+use crate::strokes::{CURVE_POINTS, StrokeRecord};
 use crate::zones::{HeartProfile, HeartStats, heart_stats};
 
 /// Bump when the numbers below change meaning, so stored summaries can be
@@ -176,6 +176,41 @@ pub fn summarize(strokes: &[StrokeRecord], hearts: &[(i64, u16)], profile: Optio
     })
 }
 
+/// Strokes this soon after the first catch are still starting up, not
+/// representative of the piece.
+pub const START_UP_S: f64 = 30.0;
+
+fn settled(strokes: &[StrokeRecord]) -> impl Iterator<Item = &StrokeRecord> {
+    let start = strokes.first().map_or(0, |s| s.t_catch_us);
+    strokes
+        .iter()
+        .filter(move |s| rowing(s).is_some() && (s.t_catch_us - start) as f64 / 1e6 >= START_UP_S)
+}
+
+/// Point-by-point mean of every settled stroke's resampled force curve.
+pub fn mean_curve(strokes: &[StrokeRecord]) -> Vec<f64> {
+    let mut sum = vec![0.0; CURVE_POINTS];
+    let mut n = 0;
+    for s in settled(strokes).filter(|s| s.force_n.len() == CURVE_POINTS) {
+        sum.iter_mut().zip(&s.force_n).for_each(|(a, b)| *a += b);
+        n += 1;
+    }
+    if n == 0 {
+        return Vec::new();
+    }
+    sum.into_iter().map(|v| v / n as f64).collect()
+}
+
+/// Indices of the settled strokes with the most and the least work.
+pub fn work_extremes(strokes: &[StrokeRecord]) -> Option<(u32, u32)> {
+    let mut with_work = settled(strokes).filter_map(|s| s.joules().map(|j| (s.index, j)));
+    let first = with_work.next()?;
+    let (max, min) = with_work.fold((first, first), |(max, min), x| {
+        (if x.1 > max.1 { x } else { max }, if x.1 < min.1 { x } else { min })
+    });
+    Some((max.0, min.0))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -273,5 +308,22 @@ pub(crate) mod tests {
         let seg = segment(&s);
         assert_eq!(seg.distance_m, None);
         assert!(close(seg.watts.unwrap(), 82.0));
+    }
+
+    #[test]
+    fn mean_curve_and_extremes_skip_the_start() {
+        let mut s = steady(40, 3.0, 80.0, |_| 140.0);
+        for (i, r) in s.iter_mut().enumerate() {
+            r.force_n = vec![i as f64; CURVE_POINTS];
+        }
+        s[0].watts = Some(10); // start-up stroke: never "weakest"
+        s[20].watts = Some(120);
+        s[30].watts = Some(60);
+        let mean = mean_curve(&s);
+        // From 30 s on: strokes 10..=39.
+        assert_eq!(mean.len(), CURVE_POINTS);
+        assert!(close(mean[0], (10..=39).sum::<usize>() as f64 / 30.0));
+        assert_eq!(work_extremes(&s), Some((20, 30)));
+        assert_eq!(work_extremes(&s[..5]), None);
     }
 }

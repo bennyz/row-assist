@@ -1,0 +1,20 @@
+[package]
+name = "server"
+description = "HTTP server: the review screen's API and the built frontend"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+analysis.workspace = true
+store.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+axum.workspace = true
+tower-http.workspace = true
+
+[dev-dependencies]
+tower.workspace = true

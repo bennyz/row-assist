@@ -2,8 +2,9 @@
 
 use analysis::session::Summary;
 use analysis::strokes::StrokeRecord;
-use analysis::zones::Sex;
+use analysis::zones::{HeartProfile, Sex, Source};
 use anyhow::{Context, Result, bail};
+use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
 
 /// What identifies and describes a recording, from its header.
@@ -114,30 +115,37 @@ pub async fn save_session(
     Ok(id)
 }
 
+const SESSION_COLUMNS: &str = "id, started_at_us, recording, note, plan, simulated, summary";
+
 /// All sessions, oldest first.
 pub async fn list_sessions(pool: &SqlitePool) -> Result<Vec<SessionRow>> {
-    let rows = sqlx::query(
-        "SELECT id, started_at_us, recording, note, plan, simulated, summary
-         FROM sessions ORDER BY started_at_us",
-    )
-    .fetch_all(pool)
-    .await?;
-    rows.iter()
-        .map(|r| {
-            let summary: String = r.try_get("summary")?;
-            Ok(SessionRow {
-                id: r.try_get("id")?,
-                meta: SessionMeta {
-                    started_at_us: r.try_get("started_at_us")?,
-                    recording: r.try_get("recording")?,
-                    note: r.try_get("note")?,
-                    plan: r.try_get("plan")?,
-                    simulated: r.try_get("simulated")?,
-                },
-                summary: serde_json::from_str(&summary).context("stored summary")?,
-            })
-        })
-        .collect()
+    let rows = sqlx::query(&format!("SELECT {SESSION_COLUMNS} FROM sessions ORDER BY started_at_us"))
+        .fetch_all(pool)
+        .await?;
+    rows.iter().map(session_row).collect()
+}
+
+pub async fn get_session(pool: &SqlitePool, id: i64) -> Result<Option<SessionRow>> {
+    let row = sqlx::query(&format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE id = ?"))
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    row.as_ref().map(session_row).transpose()
+}
+
+fn session_row(r: &SqliteRow) -> Result<SessionRow> {
+    let summary: String = r.try_get("summary")?;
+    Ok(SessionRow {
+        id: r.try_get("id")?,
+        meta: SessionMeta {
+            started_at_us: r.try_get("started_at_us")?,
+            recording: r.try_get("recording")?,
+            note: r.try_get("note")?,
+            plan: r.try_get("plan")?,
+            simulated: r.try_get("simulated")?,
+        },
+        summary: serde_json::from_str(&summary).context("stored summary")?,
+    })
 }
 
 pub async fn session_strokes(pool: &SqlitePool, session_id: i64) -> Result<Vec<StrokeRecord>> {
@@ -157,6 +165,18 @@ pub struct Profile {
     pub hr_max: Option<u16>,
     pub sex: Option<Sex>,
     pub drag_target: Option<u8>,
+}
+
+impl Profile {
+    /// Heart profile with estimates filling what isn't set (`age` from the logbook).
+    pub fn heart(&self, age: Option<i64>) -> Option<(HeartProfile, Source, Source)> {
+        HeartProfile::resolve(
+            self.hr_rest.map(f64::from),
+            self.hr_max.map(f64::from),
+            age.map(|a| a as f64),
+            self.sex,
+        )
+    }
 }
 
 fn sex_str(s: Sex) -> &'static str {
@@ -274,6 +294,8 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].meta, meta);
         assert_eq!(all[0].summary, summary);
+        assert_eq!(get_session(&pool, id).await.unwrap().unwrap(), all[0]);
+        assert!(get_session(&pool, id + 1).await.unwrap().is_none());
         assert_eq!(session_strokes(&pool, id).await.unwrap(), strokes[..2].to_vec());
 
         pool.close().await;

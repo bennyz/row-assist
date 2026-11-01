@@ -331,8 +331,12 @@ Visual language from `.impeccable.md`: dark, instrument-panel, amber accent, Cha
    readiness, today's workout and focus.
 2. **Live / mirror** (front screen): stick-figure mirror with target guides and last-stroke
    freeze frames (§5.3), focus cue, HR + zone, current fault rate, force curve trace.
-3. **Session review** (laptop): scrubbable timeline of force curves, HR and joint angles;
-   stick figures at catch/finish; worst vs best stroke side by side.
+3. **Session review** (laptop, built: `rowctl serve`): readout strip (time, metres, pace, watts,
+   spm, HR, EF) and secondary numbers; time in zones as a segmented bar; power, rate and HR per
+   stroke as small multiples on one time axis with a shared crosshair; the selected stroke's
+   force curve against the session mean, with jumps to the most- and least-work strokes; every
+   stroke as a table. Amber always means "the selected stroke". Phase 2 adds joint angles and
+   stick figures at catch/finish.
 4. **Progress**: watts at 20, EF, load/fatigue/form, fault-rate trends, form under fatigue,
    benchmarks, readiness, consistency calendar.
 
@@ -350,8 +354,8 @@ crates/
   store/      data paths, SQLite (sqlx, migrations), Concept2 CSV importer
   rowctl/     CLI: record, watch, analyze, sessions, profile, simulate, dump, replay, curves,
               pm5-probe, import-c2, history
-  server/     (Phase 1) axum: WebSocket, REST, coach
-frontend/     (Phase 1+) Svelte 5 + Vite: setup, camera (@mediapipe/tasks-vision), live, review, progress
+  server/     axum: JSON API over sessions + the built frontend (`rowctl serve`); later WebSocket, coach
+frontend/     Svelte 5 + Vite: review (built); later setup, camera (@mediapipe/tasks-vision), live, progress
 migrations/
 contrib/udev/ hidraw access rule for the PM5
 fixtures/     recorded sessions used by tests
@@ -375,7 +379,7 @@ Each phase ends with something usable on the erg.
 | Phase | Scope | Done when |
 |---|---|---|
 | **0. Foundations** | workspace; event model; PM5 driver port + drag factor + **force curve spike**; H10 HR + RR; recorder, replay, dump; Concept2 CSV importer | a real row is recorded, replayed, and its force curves dumped; the CSV is in SQLite. *Status: code done and verified with the simulator; CSV imported. Waiting on hardware: `pm5-probe`, then a real `record`.* |
-| **1. Effort** | stroke assembler; session persistence; zones, TRIMP, EF, decoupling, watts at 20; drag-factor check; review screen; audio zone cues; reference-row comparison | comeback-ramp sessions are rowed with the app. *Status: all but the review screen done in `rowctl` (`record --plan`, `--speak`, `analyze`, `sessions`, `profile`, `simulate`); next is the server + review screen.* |
+| **1. Effort** | stroke assembler; session persistence; zones, TRIMP, EF, decoupling, watts at 20; drag-factor check; review screen; audio zone cues; reference-row comparison | comeback-ramp sessions are rowed with the app. *Status: built: `rowctl record --plan … --speak`, `analyze`, `sessions`, `profile`, `simulate`, and the review screen (`rowctl serve`). Waiting on the first real comeback-ramp rows.* |
 | **2. Posture** | camera page; framing check; near-side + horizon + scale; sync auto-calibration; joint angles; faults 1–4; one-focus coach; **mirror on the front screen**; deliberate-fault fixtures | the coach flags deliberately rowed faults and stays quiet on clean strokes |
 | **3. Readiness** | Shortcut endpoint; baselines; readiness on setup screen; Karvonen zones from Watch resting HR | a week of Watch data shows up and changes the zones |
 | **4. Improvement loop** | planner; PM5 workout programming; progress screen; form under fatigue; benchmarks | the app proposes next session + focus and loads it onto the PM5 |

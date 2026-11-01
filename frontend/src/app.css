@@ -1,0 +1,100 @@
+/* Instrument panel: one dark blue-tinted surface, amber for the thing in focus.
+   Chart colours are validated against --surface (dataviz validator). */
+:root {
+  --bg: #070d14;
+  --surface: #0c131b;
+  --rule: #1c252e;
+  --ink: #ebe7df;
+  --ink-2: #a4acb4;
+  --ink-3: #7e8791;
+  --accent: #e7a13c;
+  --accent-wash: rgb(231 161 60 / 0.1);
+  --mean: #6e7c88;
+  /* Heart-rate zones Z0–Z5: one hue, monotone lightness (ordinal). */
+  --z0: #7a4400;
+  --z1: #965e00;
+  --z2: #b27923;
+  --z3: #cf9443;
+  --z4: #edb161;
+  --z5: #ffce7e;
+  --font-num: 'Chakra Petch', ui-monospace, monospace;
+  --font-text: 'Hanken Grotesk', system-ui, sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 15px/1.45 var(--font-text);
+}
+
+button {
+  font: inherit;
+  color: var(--ink-2);
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+
+button:hover {
+  color: var(--ink);
+  border-color: var(--ink-3);
+}
+
+button:focus-visible,
+[tabindex]:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.num {
+  font-family: var(--font-num);
+}
+
+.tab {
+  font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: var(--ink-3);
+}
+
+.tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+  font-size: 13px;
+  white-space: nowrap;
+  z-index: 2;
+}
+
+.tooltip .row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tooltip strong {
+  font-family: var(--font-num);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.tooltip .key {
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
+}

@@ -13,6 +13,7 @@ devices = { path = "crates/devices" }
 recording = { path = "crates/recording" }
 analysis = { path = "crates/analysis" }
 store = { path = "crates/store" }
+server = { path = "crates/server" }
 
 anyhow = "1"
 thiserror = "2"
@@ -27,7 +28,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 hidapi = { version = "2", default-features = false, features = ["linux-native"] }
 btleplug = "0.11"
 uuid = "1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 csv = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["fs"] }
+tower = { version = "0.5", features = ["util"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
