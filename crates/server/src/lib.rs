@@ -27,7 +27,9 @@ use tracing::error;
 pub mod camera;
 pub mod health;
 pub mod live;
+pub mod phone;
 pub mod progress;
+pub mod tls;
 pub mod today;
 pub use camera::Live;
 
@@ -88,6 +90,8 @@ pub fn router(api: Option<Api>, web_dir: &Path, live: Live) -> Router {
     let mut app = Router::new()
         .route("/ws/camera", get(camera::upgrade))
         .route("/ws/live", get(live::upgrade))
+        .route("/api/phone", get(phone::info))
+        .route(phone::CA_PATH, get(phone::ca))
         .with_state(live);
     if let Some(api) = api {
         app = app.merge(
@@ -584,6 +588,56 @@ mod tests {
             let (mut ws, _) = connect_async(format!("ws://{addr}/ws/live")).await.unwrap();
             assert_eq!(next_json(&mut ws).await["live"], false);
             server.abort();
+        }
+
+        #[tokio::test]
+        async fn the_mirror_gets_the_setup_check() {
+            let dir = std::env::temp_dir().join(format!("row-assist-setup-{}", std::process::id()));
+            let (tx, _rx) = mpsc::channel(256);
+            let hub = crate::live::channel();
+            let clock = Clock::start();
+            let app = router(None, &dir, Live::into_session(clock, tx).with_broadcast(hub));
+            let (addr, server) = listen("127.0.0.1:0".parse().unwrap(), app).await.unwrap();
+
+            let (mut screen, _) = connect_async(format!("ws://{addr}/ws/live")).await.unwrap();
+            assert_eq!(next_json(&mut screen).await["type"], "hello");
+            let (mut cam, _) = connect_async(format!("ws://{addr}/ws/camera")).await.unwrap();
+            let t0 = clock.now_us();
+            for i in 0..30 {
+                cam.send(Message::Text(frame(t0 + i * 33_333).into())).await.unwrap();
+            }
+            let setup = loop {
+                let m = next_json(&mut screen).await;
+                if m["type"] == "framing" && m["frames"] == 30 {
+                    break m;
+                }
+            };
+            assert_eq!(setup["ok"], true, "{setup:#}");
+            server.abort();
+        }
+
+        #[tokio::test]
+        async fn phone_setup_is_served_only_with_a_phone() {
+            let dir = std::env::temp_dir().join(format!("row-assist-phone-{}", std::process::id()));
+            let get = |app: Router, uri: &'static str| async move {
+                use tower::ServiceExt;
+                let req = axum::http::Request::get(uri).body(axum::body::Body::empty()).unwrap();
+                let res = app.oneshot(req).await.unwrap();
+                let status = res.status();
+                (status, axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap())
+            };
+            let none = router(None, &dir, Live::setup_only(Clock::start()));
+            assert_eq!(get(none.clone(), "/api/phone").await.0, StatusCode::NOT_FOUND);
+            assert_eq!(get(none, "/phone/ca.cer").await.0, StatusCode::NOT_FOUND);
+
+            let phone = crate::phone::Phone { origin: "https://192.168.1.20:8443".into(), ca_der: vec![1, 2, 3] };
+            let app = router(None, &dir, Live::setup_only(Clock::start()).with_phone(phone));
+            let (status, body) = get(app.clone(), "/api/phone").await;
+            assert_eq!(status, StatusCode::OK);
+            let info: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(info["camera_url"], "https://192.168.1.20:8443/phone/camera");
+            assert_eq!(info["origin"], "https://192.168.1.20:8443");
+            assert_eq!(get(app, "/phone/ca.cer").await.1.as_ref(), &[1, 2, 3]);
         }
 
         #[tokio::test]

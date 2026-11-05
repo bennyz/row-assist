@@ -69,9 +69,15 @@ pub struct LiveArgs {
     /// session) and the mirror for a front screen
     #[arg(long)]
     camera: bool,
-    /// Address for the camera page (with --camera)
+    /// Address for the camera page (with --camera; --phone listens on all
+    /// interfaces at this port)
     #[arg(long, default_value = "127.0.0.1:8080")]
     listen: std::net::SocketAddr,
+    /// Use a phone on the network as the camera (implies --camera): the
+    /// camera page is also served over HTTPS, and a QR code opens its
+    /// one-time setup
+    #[arg(long)]
+    phone: bool,
     /// The one technique fault to coach this session (auto: the most
     /// frequent one in your last 3 sessions)
     #[arg(long, value_enum, default_value_t = FocusArg::Auto)]
@@ -111,7 +117,7 @@ impl FocusArg {
 impl LiveArgs {
     /// Will strokes have a camera view?
     fn camera_on(&self) -> bool {
-        self.camera || self.sim_camera || self.sim_fault.is_some()
+        self.camera || self.phone || self.sim_camera || self.sim_fault.is_some()
     }
 }
 
@@ -413,33 +419,19 @@ async fn run(
     }
     // The camera page's frames join the same stream as the devices'; the
     // mirror follows the session on /ws/live.
-    let camera = if args.camera {
+    let mut servers = Vec::new();
+    if args.camera || args.phone {
         let hub = live::channel();
         let session = server::Live::into_session(clock, tx.clone()).with_broadcast(hub.clone());
         let api = pool.map(|pool| server::Api {
             pool,
             token: store::health::token(&store::paths::token_path()).ok(),
         });
-        let app = server::router(api, &crate::default_web_dir(), session);
-        match server::listen(args.listen, app).await {
-            Ok((addr, task)) => {
-                println!("Camera page: http://{addr}/camera (open it on this machine: browsers only allow the camera on localhost)");
-                if addr.ip().is_loopback() {
-                    println!("Mirror: http://{addr}/mirror (for a screen on another machine, use --listen 0.0.0.0:{})", addr.port());
-                } else {
-                    println!("Mirror: http://<this machine's address>:{}/mirror", addr.port());
-                }
-                coach.screens = Some(hub);
-                Some(task)
-            }
-            Err(e) => {
-                eprintln!("Camera page unavailable ({e:#}); is `rowctl serve` already using that port?");
-                None
-            }
+        if let Some(tasks) = crate::screens::start(args.listen, args.phone, session, api).await {
+            coach.screens = Some(hub);
+            servers = tasks;
         }
-    } else {
-        None
-    };
+    }
     if writer.is_some() {
         spawn_markers(clock, tx.clone());
     }
@@ -497,7 +489,7 @@ async fn run(
     // Closing the channel stops the device tasks; give the H10 a moment to
     // disconnect cleanly so the strap is free for the PM5 or phone.
     drop(rx);
-    if let Some(task) = camera {
+    for task in servers {
         task.abort();
     }
     for task in tasks {

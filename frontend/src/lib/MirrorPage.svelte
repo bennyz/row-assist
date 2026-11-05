@@ -21,6 +21,9 @@
   let focus = $state(null);
   let cue = $state(null);
   let cueTimer;
+  // The camera's setup check; gone when the camera page stops sending it.
+  let setup = $state(null);
+  let setupTimer;
   let ws;
   let alive = true;
 
@@ -57,6 +60,10 @@
         last = m;
       } else if (m.type === 'focus') {
         focus = m;
+      } else if (m.type === 'framing') {
+        setup = m;
+        clearTimeout(setupTimer);
+        setupTimer = setTimeout(() => (setup = null), 2000);
       } else if (m.type === 'cue') {
         cue = m.text;
         clearTimeout(cueTimer);
@@ -74,6 +81,7 @@
     alive = false;
     ws?.close();
     clearTimeout(cueTimer);
+    clearTimeout(setupTimer);
   });
 
   // Live figure, re-anchored at the ankle so the body slides like on the erg.
@@ -140,7 +148,7 @@
   {#if link !== 'open'}
     <p class="state">Connecting to Row Assist…</p>
   {:else if !live}
-    <p class="state">No session running. Start one on the Mac with <code>rowctl record --camera</code>.</p>
+    <p class="state">No session running. Start one with <code>rowctl record --camera</code> (or <code>--phone</code>).</p>
   {:else if mode === 'mirror'}
     <div class="stage">
       <svg viewBox="0 0 {W} {H}" role="img" aria-label="Your body now, with target guides">
@@ -161,11 +169,23 @@
         {/each}
       </svg>
       {#if !anchored}
-        <p class="overlay">Waiting for the camera: open /camera on the Mac.</p>
+        <p class="overlay">
+          {setup ? 'The camera is on but can’t see you yet.' : 'Waiting for the camera: open /camera on the computer, or scan the code rowctl printed with the phone.'}
+        </p>
       {/if}
     </div>
 
     <aside>
+      {#if setup && !setup.ok}
+        <section class="setup" aria-live="polite">
+          <h2>Camera setup</h2>
+          <ul>
+            {#each setup.checks.filter((c) => !c.ok) as c (c.key)}
+              <li><span aria-hidden="true">✕</span> {c.detail}</li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
       <h2>Last stroke</h2>
       {#if frozen}
         <Figures stroke={frozen} typicalCatch={last.typical_catch} typicalFinish={last.typical_finish} height={170} />
@@ -245,6 +265,23 @@
     display: block;
     width: 100%;
     height: auto;
+  }
+  .setup {
+    margin-bottom: 1.5rem;
+  }
+  .setup ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    font-size: 20px;
+    color: var(--ink);
+  }
+  .setup li {
+    margin-bottom: 0.4rem;
+  }
+  .setup span {
+    color: var(--bad);
+    margin-right: 0.4rem;
   }
   .guide {
     fill: var(--accent-wash);

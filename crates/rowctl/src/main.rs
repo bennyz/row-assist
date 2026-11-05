@@ -18,6 +18,7 @@ mod probe;
 mod profile;
 mod render;
 mod review;
+mod screens;
 mod simulate;
 mod speak;
 

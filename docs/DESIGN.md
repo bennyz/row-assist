@@ -37,7 +37,7 @@ Useful formulas:
  eye level ──▶   PM5 ◀── feet ════ seat rail ══════════════════
  past the PM5    └─────────────────────────────────────────┘
                                    ▲  ~3 m, square to the rail
-                            [camera: MacBook, later iPhone]
+                            [camera: MacBook or iPhone]
                             lens ≈ seated hip–shoulder height
 ```
 
@@ -47,12 +47,18 @@ Useful formulas:
   head turn, breaking the posture being checked).
 - **Now, no new hardware:** the MacBook stands side-on and runs the server and camera page; the
   Lenovo stands in front and only opens the live page in a browser.
-- **Upgrade, needs a phone mount:** iPhone side-on as a Continuity Camera; the MacBook in front
-  runs everything and is the screen. Better camera, and the Mac's own camera then faces the
-  rower, a free front view later (left/right symmetry).
-- **The camera page always runs on the server machine**, so it's on `localhost` (browsers only
-  allow camera access on secure origins) and there is one clock. The front screen needs no
-  camera, so plain HTTP over the LAN is fine.
+- **Phone as the side camera (`--phone`, built):** a spare iPhone side-on runs the camera page
+  in Safari and does the pose work itself; only landmarks cross the Wi-Fi. Whichever computer
+  stands in front runs `rowctl` (PM5 on USB, H10 over BLE) and shows the mirror, so no Mac is
+  needed at the erg. The camera's setup check is also shown on the mirror, because the phone's
+  screen faces away from the rower.
+- **Browsers only open the camera on `localhost` or HTTPS.** A camera page on the server machine
+  uses `localhost`. A phone uses HTTPS (`server::tls`): a local CA is made once in
+  `<data>/tls/` (key mode 0600) and installed and trusted on the phone once; each start issues a
+  server certificate for the current LAN address (397 days, serverAuth, IP in the SAN: what iOS
+  requires). `rowctl` prints a QR code for `http://<lan-ip>:8080/phone`, a setup page that
+  checks whether the phone trusts the CA yet and links to the HTTPS camera page on `:8443`.
+  The front screen needs no camera, so plain HTTP over the LAN is fine.
 - **Light beats pixels.** The Mac camera beats the Lenovo's (720p MJPEG only) mainly in dim
   light: pose breaks on noise and motion blur, not resolution (the model works on a ~256 px
   crop). Whole body and full slide in frame; light from the camera side, never behind the rower.
@@ -165,9 +171,12 @@ analysis: `rowctl analyze --all` rebuilds them from the recordings.
 
 ### 4.4 Time alignment
 
-- Server and camera page run on the same Mac, so they share a wall clock. The browser
-  stamps each frame with its capture time (`performance.timeOrigin` + the video frame's
-  `captureTime`); the server also stamps arrival.
+- The browser stamps each frame with its capture time (`performance.timeOrigin` + the video
+  frame's `captureTime`) and converts it to the server's clock before sending: the camera page
+  pings over `/ws/camera`, the server answers with its session time, and the quickest round
+  trip of the last minute gives the offset (NTP-style; re-pinged every 5 s to follow drift
+  between two crystals, ~10–50 ppm). On the same machine it's ~0; a phone's clock can be off by
+  anything. The server also stamps arrival.
 - A residual offset remains (camera latency, clock skew, the PM5's own detection delay).
   **Auto-calibrated** (`analysis::technique::sync_offset`) over strokes 4–23: the camera catch
   is the frame with the wrist furthest forward within −600/+300 ms of the PM5 drive start; the

@@ -7,6 +7,7 @@
   import Readiness from './lib/Readiness.svelte';
   import ProgressPage from './lib/ProgressPage.svelte';
   import Today from './lib/Today.svelte';
+  import PhonePage from './lib/PhonePage.svelte';
 
   let sessions = $state([]);
   let current = $state(null);
@@ -17,6 +18,9 @@
   // The front screen gets the whole window.
   const onMirror = $derived(path.startsWith('/mirror'));
   const onProgress = $derived(path.startsWith('/progress'));
+  // A phone gets its own full-window pages: setup, then the camera.
+  const onPhoneCamera = $derived(path.startsWith('/phone/camera'));
+  const onPhone = $derived(path.startsWith('/phone'));
 
   const fromPath = () => {
     const m = location.pathname.match(/^\/sessions\/(\d+)/);
@@ -49,6 +53,10 @@
 
 {#if onMirror}
   <MirrorPage />
+{:else if onPhoneCamera}
+  <CameraPage phone />
+{:else if onPhone}
+  <PhonePage />
 {:else}
 <div class="layout">
   <aside>

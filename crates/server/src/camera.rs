@@ -28,6 +28,7 @@ pub struct Live {
     tx: Option<mpsc::Sender<Event>>,
     busy: Arc<AtomicBool>,
     broadcast: Option<crate::live::LiveSender>,
+    phone: Option<Arc<crate::phone::Phone>>,
 }
 
 impl Live {
@@ -38,6 +39,7 @@ impl Live {
             tx: None,
             busy: Arc::default(),
             broadcast: None,
+            phone: None,
         }
     }
 
@@ -48,6 +50,7 @@ impl Live {
             tx: Some(tx),
             busy: Arc::default(),
             broadcast: None,
+            phone: None,
         }
     }
 
@@ -62,16 +65,36 @@ impl Live {
     pub fn broadcast(&self) -> Option<&crate::live::LiveSender> {
         self.broadcast.as_ref()
     }
+
+    /// The camera page is also served over HTTPS for a phone.
+    pub fn with_phone(self, phone: crate::phone::Phone) -> Self {
+        Self {
+            phone: Some(Arc::new(phone)),
+            ..self
+        }
+    }
+
+    pub fn phone(&self) -> Option<&crate::phone::Phone> {
+        self.phone.as_deref()
+    }
 }
 
 /// One frame from the page. `p` is empty when no one is detected.
 #[derive(Debug, Deserialize)]
 struct FrameMsg {
-    /// Capture time, µs since the Unix epoch.
+    /// Capture time, µs since the Unix epoch, on the session clock (the page
+    /// corrects its own clock with [`Ping`]s).
     t: f64,
     w: u16,
     h: u16,
     p: Vec<[f32; 3]>,
+}
+
+/// The page's clock reading, µs. The reply carries the session clock's, so
+/// the page can work out its offset (it may be a phone with its own clock).
+#[derive(Debug, Deserialize)]
+struct Ping {
+    ping: f64,
 }
 
 #[derive(Serialize)]
@@ -80,6 +103,7 @@ enum Reply<'a> {
     /// Sent on connect, and again if the recording ends.
     Hello { recording: bool },
     Framing(&'a Framing),
+    Clock { ping: f64, server_us: i64 },
     Error { message: String },
 }
 
@@ -150,6 +174,13 @@ async fn session(mut socket: WebSocket, live: Live) {
         tokio::select! {
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Text(text))) => {
+                    if let Ok(Ping { ping }) = serde_json::from_str::<Ping>(&text) {
+                        let reply = Reply::Clock { ping, server_us: live.clock.now_us() };
+                        if !send(&mut socket, &reply).await {
+                            break;
+                        }
+                        continue;
+                    }
                     let pose = match parse_frame(&text) {
                         Ok(p) => p,
                         Err(e) => {
@@ -184,6 +215,9 @@ async fn session(mut socket: WebSocket, live: Live) {
             },
             _ = tick.tick() => {
                 let f = framing(window.make_contiguous());
+                if let Some(b) = &live.broadcast {
+                    crate::live::publish(b, &crate::live::LiveMsg::Framing(&f));
+                }
                 if !send(&mut socket, &Reply::Framing(&f)).await {
                     break;
                 }

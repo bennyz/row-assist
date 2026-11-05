@@ -51,6 +51,45 @@ export function frameMessage(points, capturedUs, width, height) {
   return JSON.stringify({ t: Math.round(capturedUs), w: width, h: height, p: points });
 }
 
+/** Now on the page's clock, µs: the same base as frame capture times. */
+export const pageNowUs = () => (performance.timeOrigin + performance.now()) * 1000;
+
+/**
+ * The page's clock against the server's (the page may be a phone with its
+ * own clock). Each ping's reply carries the server time; assuming the reply
+ * took half the round trip, offset = server − midpoint. The quickest round
+ * trip of the last minute gives the best estimate, and re-pinging follows
+ * any drift between the two clocks.
+ */
+export class ClockSync {
+  #samples = [];
+
+  ping() {
+    return JSON.stringify({ ping: pageNowUs() });
+  }
+
+  /** A `{type: 'clock', ping, server_us}` reply. */
+  reply(m) {
+    const back = pageNowUs();
+    this.#samples.push({ at: back, rtt: back - m.ping, offset: m.server_us - (m.ping + back) / 2 });
+    this.#samples = this.#samples.filter((s) => back - s.at < 60e6);
+  }
+
+  get ready() {
+    return this.#samples.length > 0;
+  }
+
+  /** Server minus page, µs, and the uncertainty (half the round trip). */
+  get best() {
+    return this.#samples.reduce((a, s) => (!a || s.rtt < a.rtt ? s : a), null);
+  }
+
+  /** Add to a page time to get server time. */
+  get offset() {
+    return this.best?.offset ?? 0;
+  }
+}
+
 /** Which side the model sees better, for drawing before the server says. */
 export function clearerSide(points) {
   if (points.length !== 18) return null;

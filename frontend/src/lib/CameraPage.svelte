@@ -3,7 +3,10 @@
   // landmarks go to the server (/ws/camera), which records them with the
   // session and answers with the framing check.
   import { onDestroy, onMount } from 'svelte';
-  import { BONES, VISIBLE, clearerSide, createLandmarker, frameMessage, pickJoints } from './pose.js';
+  import { BONES, VISIBLE, ClockSync, clearerSide, createLandmarker, frameMessage, pickJoints } from './pose.js';
+
+  // `phone`: the page runs on a phone (/phone/camera), full window.
+  let { phone = false } = $props();
 
   const STORE_KEY = 'row-assist.camera';
   const remembered = () => {
@@ -26,6 +29,8 @@
   let link = $state('connecting');
   let recording = $state(false);
   let framing = $state(null);
+  let clockOffset = $state(null);
+  let awake = $state(null);
 
   let landmarker = null;
   let stream = null;
@@ -34,13 +39,17 @@
   let lastTs = 0;
   let frames = 0;
   let fpsFrom = performance.now();
+  const clock = new ClockSync();
+  let pingTimer;
+  let wake = null;
 
   onMount(async () => {
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       problem =
-        'Browsers only allow the camera on localhost or HTTPS. Open http://localhost:8080/camera on the computer the camera is attached to.';
+        'Browsers only allow the camera on localhost or HTTPS. On the computer with the camera, open http://localhost:8080/camera; for a phone, start rowctl with --phone and open the address it prints.';
       return;
     }
+    document.addEventListener('visibilitychange', onVisible);
     try {
       ({ landmarker, delegate } = await createLandmarker());
     } catch (e) {
@@ -53,10 +62,34 @@
 
   onDestroy(() => {
     alive = false;
+    clearTimeout(pingTimer);
+    document.removeEventListener('visibilitychange', onVisible);
+    wake?.release().catch(() => {});
     stream?.getTracks().forEach((t) => t.stop());
     ws?.close();
     landmarker?.close();
   });
+
+  // A phone's screen locking stops the camera: hold it on while the page is
+  // visible (the lock is dropped whenever the page is hidden).
+  async function keepAwake() {
+    if (wake && !wake.released) return;
+    if (!navigator.wakeLock || document.visibilityState !== 'visible') {
+      awake = false;
+      return;
+    }
+    try {
+      wake = await navigator.wakeLock.request('screen');
+      awake = true;
+      wake.addEventListener('release', () => (awake = false));
+    } catch {
+      awake = false;
+    }
+  }
+
+  function onVisible() {
+    if (document.visibilityState === 'visible' && stream) keepAwake();
+  }
 
   async function openCamera() {
     stage = 'Opening the camera…';
@@ -65,7 +98,8 @@
       stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {
-          deviceId: deviceId ? { exact: deviceId } : undefined,
+          // A phone's back camera unless one was chosen; laptops ignore it.
+          ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: 'environment' } }),
           width: { ideal: 1280 },
           height: { ideal: 720 },
           frameRate: { ideal: 30 },
@@ -92,6 +126,7 @@
     await video.play();
     res = `${video.videoWidth}×${video.videoHeight}`;
     stage = null;
+    keepAwake();
     schedule();
   }
 
@@ -110,9 +145,23 @@
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     ws = new WebSocket(`${proto}://${location.host}/ws/camera`);
     link = 'connecting';
+    // Five quick pings, then one every 5 s to follow drift.
+    ws.onopen = () => {
+      let n = 0;
+      const tick = () => {
+        if (ws?.readyState !== WebSocket.OPEN) return;
+        ws.send(clock.ping());
+        n += 1;
+        pingTimer = setTimeout(tick, n < 5 ? 150 : 5000);
+      };
+      tick();
+    };
     ws.onmessage = (e) => {
       const m = JSON.parse(e.data);
-      if (m.type === 'hello') {
+      if (m.type === 'clock') {
+        clock.reply(m);
+        clockOffset = clock.best;
+      } else if (m.type === 'hello') {
         link = 'open';
         recording = m.recording;
       } else if (m.type === 'framing') {
@@ -123,6 +172,7 @@
       }
     };
     ws.onclose = () => {
+      clearTimeout(pingTimer);
       if (link !== 'refused') link = 'closed';
       if (alive && link !== 'refused') setTimeout(connect, 2000);
     };
@@ -150,9 +200,10 @@
     const result = landmarker.detectForVideo(video, ts);
     const points = pickJoints(result.landmarks?.[0]);
     draw(points);
-    // Skip a frame rather than queue them if the socket is backed up.
-    if (ws?.readyState === WebSocket.OPEN && ws.bufferedAmount < 64 * 1024) {
-      ws.send(frameMessage(points, capturedUs, video.videoWidth, video.videoHeight));
+    // Skip a frame rather than queue them if the socket is backed up, and
+    // until the clocks are compared (frames go out on the server's clock).
+    if (ws?.readyState === WebSocket.OPEN && clock.ready && ws.bufferedAmount < 64 * 1024) {
+      ws.send(frameMessage(points, capturedUs + clock.offset, video.videoWidth, video.videoHeight));
     }
     frames++;
     if (ts - fpsFrom >= 1000) {
@@ -214,7 +265,7 @@
   );
 </script>
 
-<div class="camera">
+<div class="camera" class:phone>
   <div class="stage">
     <!-- svelte-ignore a11y_media_has_caption -->
     <video bind:this={video} muted playsinline></video>
@@ -247,6 +298,11 @@
       <div><dt>video</dt><dd class="num tab">{res ?? '–'}</dd></div>
       <div><dt>pose</dt><dd class="num tab">{fps ? `${fps.toFixed(0)} fps` : '–'}</dd></div>
       <div><dt>runs on</dt><dd class="num">{delegate ?? '–'}</dd></div>
+      <div title="This page's clock against Row Assist's, corrected in every frame (± half the round trip)">
+        <dt>clock</dt>
+        <dd class="num tab">{clockOffset ? `${clockOffset.offset < 0 ? '−' : '+'}${Math.abs(clockOffset.offset / 1000).toFixed(0)} ms ±${(clockOffset.rtt / 2000).toFixed(0)}` : '–'}</dd>
+      </div>
+      <div><dt>screen</dt><dd class="num">{awake == null ? '–' : awake ? 'kept on' : 'may lock'}</dd></div>
     </dl>
 
     <h2>Setup check</h2>
@@ -269,6 +325,13 @@
 
     <h2>Placement</h2>
     <ul class="tips muted">
+      {#if phone}
+        <li>Landscape and plugged in. Pick the Back Camera above, not Ultra Wide (it bends the edges).</li>
+        {#if awake === false}
+          <li>This browser can't keep the screen on: set Settings → Display &amp; Brightness → Auto-Lock to Never.</li>
+        {/if}
+        <li>The setup check also shows on the mirror, so you can check it from the erg.</li>
+      {/if}
       <li>Square to the side of the erg, lens level with your hip, about 2–3 m away.</li>
       <li>Whole body in view at both the catch and the finish.</li>
       <li>Light on you from the front or side, not a bright window behind you.</li>
@@ -278,6 +341,9 @@
 </div>
 
 <style>
+  .camera.phone {
+    padding: 1rem;
+  }
   .camera {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 20rem;

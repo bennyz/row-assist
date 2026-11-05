@@ -3,7 +3,7 @@
 //! screen gets each message. A screen that falls behind skips ahead rather
 //! than queueing stale frames.
 
-use analysis::pose::Angles;
+use analysis::pose::{Angles, Framing};
 use analysis::technique::{CATCH_TRUNK_GUIDE, FINISH_TRUNK_GUIDE, Fault, Figure};
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -38,6 +38,8 @@ pub enum LiveMsg<'a> {
     Cue { text: &'a str },
     /// The focus fault for this session.
     Focus { fault: Option<Fault>, cue: Option<&'a str> },
+    /// The camera's setup check, twice a second while a camera page is connected.
+    Framing(&'a Framing),
 }
 
 #[derive(Debug, Serialize)]
