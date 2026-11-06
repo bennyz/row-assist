@@ -1,6 +1,6 @@
 # Row Assist v2 — Design
 
-Status: draft, 2026-11-01. Replaces v1 (still in git history at `b2263f9`).
+Status: draft, 2026-11-01.
 
 Row Assist helps one rower improve on a Concept2 RowErg by measuring three things
 together, every stroke: **effort** (heart rate, power), **technique** (force curve,
@@ -37,7 +37,7 @@ Useful formulas:
  eye level ──▶   PM5 ◀── feet ════ seat rail ══════════════════
  past the PM5    └─────────────────────────────────────────┘
                                    ▲  ~3 m, square to the rail
-                            [camera: MacBook or iPhone]
+                            [camera: iPhone]
                             lens ≈ seated hip–shoulder height
 ```
 
@@ -45,13 +45,10 @@ Useful formulas:
   one device can't do both. The camera watches from the side; a screen past the flywheel at
   eye level shows the rower their position without turning the head (a wall mirror forces a
   head turn, breaking the posture being checked).
-- **Now, no new hardware:** the MacBook stands side-on and runs the server and camera page; the
-  Lenovo stands in front and only opens the live page in a browser.
-- **Phone as the side camera (`--phone`, built):** a spare iPhone side-on runs the camera page
-  in Safari and does the pose work itself; only landmarks cross the Wi-Fi. Whichever computer
-  stands in front runs `rowctl` (PM5 on USB, H10 over BLE) and shows the mirror, so no Mac is
-  needed at the erg. The camera's setup check is also shown on the mirror, because the phone's
-  screen faces away from the rower.
+- **The setup:** a spare iPhone side-on runs the camera page in Safari (`--phone`) and does the
+  pose work itself; only landmarks cross the Wi-Fi. The Linux laptop stands in front, runs
+  `rowctl` (PM5 on USB, H10 over BLE) and shows the mirror. The camera's setup check is also
+  shown on the mirror, because the phone's screen faces away from the rower.
 - **Browsers only open the camera on `localhost` or HTTPS.** A camera page on the server machine
   uses `localhost`. A phone uses HTTPS (`server::tls`): a local CA is made once in
   `<data>/tls/` (key mode 0600) and installed and trusted on the phone once; each start issues a
@@ -59,15 +56,14 @@ Useful formulas:
   requires). `rowctl` prints a QR code for `http://<lan-ip>:8080/phone`, a setup page that
   checks whether the phone trusts the CA yet and links to the HTTPS camera page on `:8443`.
   The front screen needs no camera, so plain HTTP over the LAN is fine.
-- **Light beats pixels.** The Mac camera beats the Lenovo's (720p MJPEG only) mainly in dim
+- **Light beats pixels.** The phone's camera beats the laptop's webcam (720p MJPEG only) mainly in dim
   light: pose breaks on noise and motion blur, not resolution (the model works on a ~256 px
   crop). Whole body and full slide in frame; light from the camera side, never behind the rower.
 - **Roles:** PM5 for numbers, front screen for posture, **audio** for cues.
-- Code is written on the Linux laptop and built on the Mac to row; recordings are files and
-  move freely.
-- **PM5 over USB** (reliable, no BLE dropouts) to the server machine: a USB-C→USB-B cable,
-  3–5 m if the Mac is the side camera.
-- **H10 over BLE** to the Mac. The H10 can also stay paired to the PM5 so the Concept2 log keeps HR.
+- The same Linux laptop writes the code and runs the row.
+- **PM5 over USB** (reliable, no BLE dropouts) to the laptop; it stands by the PM5, so a short
+  cable does.
+- **H10 over BLE** to the laptop. The H10 can also stay paired to the PM5 so the Concept2 log keeps HR.
 
 ---
 
@@ -77,7 +73,7 @@ Useful formulas:
 |---|---|---|---|---|
 | PM5 | USB HID, CSAFE | stroke state, watts, pace, spm, distance, drag factor, force curve | ~20 Hz status; force curve per drive | stroke boundaries (master clock), effort, force-curve technique |
 | Polar H10 | BLE HR service (0x180D) + Polar PMD | HR, RR intervals; chest accelerometer (experimental) | per beat | zones, load, drift; HRV |
-| Mac camera | browser, MediaPipe Pose Landmarker | 33 body landmarks (near side used) | ~30 fps | posture, drive/recovery sequencing |
+| Phone camera | Safari, MediaPipe Pose Landmarker | 33 body landmarks (near side used) | ~30 fps | posture, drive/recovery sequencing |
 | Apple Watch | iPhone Shortcut → HTTP POST | overnight HRV (SDNN), resting HR, sleep | daily | readiness, Karvonen HR zones |
 | Concept2 log | CSV import (later: Logbook API) | historic sessions | one-off / sync | baselines from May 2025 |
 
@@ -88,9 +84,9 @@ Video never leaves the browser; only landmark coordinates are sent to the server
 ## 4. Architecture
 
 ```
- PM5 ─USB──┐                ┌────────── server (Rust, on the Mac) ──────────────┐
+ PM5 ─USB──┐                ┌────────── server (Rust, on the laptop) ───────────┐
  H10 ─BLE──┤                │ devices → event bus → stroke assembler → analysis │
- webcam →  │   timestamped  │                       (1 record/stroke)  technique│
+ phone →   │   timestamped  │                       (1 record/stroke)  technique│
  browser ──┴──── events ──▶ │                                          effort   │
  (landmarks only)           │ recorder ─▶ session files        coach ─▶ audio   │
  iPhone Shortcut ─HTTP────▶ │ readiness        planner ─▶ next workout ─▶ PM5   │
@@ -237,7 +233,7 @@ Every fault has a matching drill (legs-only, pick drill, pause at hands-away, ra
   Other faults are recorded but not spoken.
 - Speak when the focus fault appears in **≥ 6 of the last 10 strokes**; then wait **≥ 30 s**.
 - Positive cue when the rate drops below 2/10 for 20 strokes ("That's it.").
-- Cues are ≤ 4 words. Spoken by the OS speech command for now (`say` on the Mac); browser
+- Cues are ≤ 4 words. Spoken by the OS speech command for now (`spd-say` or `espeak-ng`); browser
   `speechSynthesis` once the live view moves into the browser.
 
 **Built (`analysis::cues::FocusCoach`, `analysis::technique::LiveTechnique`):** each stroke gets
@@ -248,7 +244,7 @@ only when the camera is on. The focus cue outranks pacing cues: at most one cue 
 - Effort cues (HR zone) share the same queue with lower priority.
 
 **Pacing cues (Phase 1, built):** `rowctl record --plan reference --speak` (or `--rate`, `--watts`,
-`--zone`, `--minutes`) speaks short corrections through the OS speech command (`say` on macOS).
+`--zone`, `--minutes`) speaks short corrections through the OS speech command (`spd-say` or `espeak-ng`).
 Judged on the median of the last 6 strokes; silent for the first 60 s; ≥ 30 s between cues and
 ≥ 60 s before the same cue repeats; priority heart rate > rate > power, and a held-back
 heart-rate cue blocks the power cue (never "harder" while HR is over the ceiling). Halfway and
@@ -484,9 +480,9 @@ Each phase ends with something usable on the erg.
   PM5 BLE force-curve characteristic.
 - **Pose quality**: webcam at 30 fps gives ~25 frames per drive at 20 spm. Good enough for
   sequencing, only coarse for catch timing. Lighting and laptop placement matter most.
-- **macOS build is untested.** Development happens on Linux; rowing happens on the Mac. hidapi
-  (IOKit backend) and btleplug (CoreBluetooth) both support macOS, but `devices` has only been
-  built on Linux. macOS asks once for the terminal's Bluetooth permission; no udev rule needed.
+- **The phone camera is untested on a real iPhone.** An emulated phone passed (HTTPS, clock
+  offset, ~26 fps on the GPU); still unknown: installing the CA profile, MediaPipe on Safari's
+  GPU (it falls back to the CPU), the wake lock (iOS 16.4+) and heat over a long row.
 - **PM5 command codes and byte order** come from the published tables, not hardware.
   `rowctl pm5-probe` sends each command alone and prints both byte orders; run it idle and
   while rowing before trusting distance, time and force values.

@@ -25,7 +25,8 @@ pub async fn run(args: HealthArgs) -> Result<()> {
     if args.token {
         let t = token(&store::paths::token_path())?;
         println!("Token: {t}");
-        println!("The Shortcut POSTs JSON to http://<this Mac's address>:8080/api/health/daily");
+        let host = server::tls::lan_ip().map_or("<this computer's address>".to_string(), |ip| ip.to_string());
+        println!("The Shortcut POSTs JSON to http://{host}:8080/api/health/daily");
         println!("with the header  Authorization: Bearer {t}");
         println!("Serve on the network for that: rowctl serve --addr 0.0.0.0:8080. Setup: docs/SHORTCUT.md");
         return Ok(());

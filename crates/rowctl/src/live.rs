@@ -59,7 +59,7 @@ pub struct LiveArgs {
     /// Piece length, for the halfway and time calls
     #[arg(long)]
     minutes: Option<f64>,
-    /// Speak cues aloud (macOS `say`; Linux `spd-say` or `espeak-ng`)
+    /// Speak cues aloud (`spd-say` or `espeak-ng`)
     #[arg(long)]
     speak: bool,
     /// Database [default: <data>/row-assist.db]

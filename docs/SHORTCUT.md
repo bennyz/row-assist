@@ -1,22 +1,22 @@
 # Apple Watch data via an iPhone Shortcut
 
 Row Assist reads HRV, resting heart rate and sleep from Apple Health through a
-personal-automation Shortcut that posts the last 7 days to the Mac every morning. Each
-run resends the whole week, so a morning the Mac was asleep is filled in by the next run.
+personal-automation Shortcut that posts the last 7 days to the laptop every morning. Each
+run resends the whole week, so a morning the laptop was asleep is filled in by the next run.
 
 > **Untested.** This was written without an iPhone to hand. The server side is tested; the
 > Shortcut steps below follow how Shortcuts' Health actions work, but names can differ
 > between iOS versions. The server tells you what it didn't like (see *Checking it*).
 
-## On the Mac
+## On the laptop
 
 1. Get the token: `rowctl health --token`.
 2. Serve on the network while the Shortcut runs: `rowctl serve --addr 0.0.0.0:8080`
-   (or record with `--listen 0.0.0.0:8080`). Allow incoming connections if macOS asks.
+   (or record with `--listen 0.0.0.0:8080`). If a firewall runs, open port 8080.
    Everything the server shows becomes readable on your home network; only posting
    Watch data needs the token.
-3. The Mac's address: System Settings → General → Sharing → Local hostname, e.g.
-   `my-mac.local`.
+3. The laptop's address: `rowctl health --token` prints it. Reserve it in the router's DHCP
+   settings so it stays the same (a `.local` name would need `avahi-daemon` running).
 
 ## The Shortcut
 
@@ -34,7 +34,7 @@ Create a new Shortcut named **Row Assist health** with these actions:
    with `start`, `end` and `value` = *Repeat Item → Value*; **Add to Variable** `Sleep`.
 5. **Dictionary** with `hrv` = `HRV`, `resting_hr` = `Resting`, `sleep` = `Sleep`
    (each as an array).
-6. **Get Contents of URL**: `http://<mac-hostname>:8080/api/health/daily`, *Method* POST,
+6. **Get Contents of URL**: `http://<laptop-address>:8080/api/health/daily`, *Method* POST,
    *Headers*: `Authorization` = `Bearer <token>`, *Request Body*: *File* = the Dictionary
    (it is sent as JSON).
 
@@ -60,7 +60,7 @@ Then **Automation → Create Personal Automation → Time of Day**, e.g. 09:00 d
 
 - Run the Shortcut by hand. The server answers with the stored days and today's readiness;
   an error names the problem (`401`: token; `400`: what couldn't be read).
-- `rowctl health` on the Mac lists the last two weeks and today's readiness.
+- `rowctl health` lists the last two weeks and today's readiness.
 - To test without the phone: save a JSON file in the format above and
   `rowctl health --import file.json`.
 
