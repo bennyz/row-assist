@@ -45,3 +45,8 @@ qrcode = { version = "0.14", default-features = false }
 x509-parser = "0.18"
 time = { version = "0.3", default-features = false, features = ["std"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+
+# Full debug info makes each test binary's link take up to ~1 GB, and several
+# link at once. Line tables keep file:line in backtraces and panics.
+[profile.dev]
+debug = "line-tables-only"

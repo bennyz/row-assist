@@ -40,6 +40,8 @@ pub enum LiveMsg<'a> {
     Focus { fault: Option<Fault>, cue: Option<&'a str> },
     /// The camera's setup check, twice a second while a camera page is connected.
     Framing(&'a Framing),
+    /// The row `rowctl serve` runs, every second.
+    Row(&'a crate::row::RowState),
 }
 
 #[derive(Debug, Serialize)]

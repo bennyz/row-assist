@@ -38,6 +38,9 @@ pub struct Header {
     /// Workout plan the session was rowed to, e.g. `reference`.
     #[serde(default)]
     pub plan: Option<String>,
+    /// The technique fault the coach was set to cue, e.g. `early arms`.
+    #[serde(default)]
+    pub focus: Option<String>,
 }
 
 impl Header {
@@ -49,11 +52,19 @@ impl Header {
             note: None,
             simulated: false,
             plan: None,
+            focus: None,
         }
     }
 }
 
 pub type FileWriter = Writer<BufWriter<File>>;
+
+/// Where the camera stills taken during a row go: next to its recording,
+/// `20261107-091500.rowrec` → `20261107-091500.stills/`, one JPEG per still
+/// named by its session time (µs, the same clock as the events).
+pub fn stills_dir(recording: &Path) -> std::path::PathBuf {
+    recording.with_extension("stills")
+}
 
 pub struct Writer<W: Write> {
     enc: zstd::Encoder<'static, W>,
@@ -284,6 +295,7 @@ mod tests {
                     bpm: 140,
                     rr_1024: vec![439],
                     contact: Some(true),
+                    ..Default::default()
                 }),
             },
             Event {

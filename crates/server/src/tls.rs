@@ -2,9 +2,9 @@
 //! the camera on localhost or over HTTPS.
 //!
 //! A local certificate authority is made once and kept in the data directory;
-//! the phone is told to trust it once. Every start issues a fresh server
-//! certificate from it for this machine's current addresses, so a new
-//! address from the router doesn't need the phone set up again.
+//! the phone is told to trust it once. A server certificate is issued from it
+//! for this machine's current addresses, and again whenever they change, so a
+//! new address from the router doesn't need the phone set up again.
 
 use std::fs;
 use std::io::Write;
@@ -23,6 +23,8 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use time::{Duration, OffsetDateTime};
 use tracing::{debug, warn};
+
+pub use rustls::ServerConfig;
 
 const CA_CERT: &str = "ca.pem";
 const CA_KEY: &str = "ca-key.pem";
@@ -129,18 +131,58 @@ pub fn lan_ip() -> Option<IpAddr> {
     (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
-/// Serve `app` over HTTPS in the background, WebSockets included. Returns the
-/// bound address.
+/// Every IPv4 address this machine has on an interface that's up, loopback
+/// aside. The certificate names them all: with Ethernet and Wi-Fi on the same
+/// network, the preferred route flips between them, and a phone holding
+/// either address must keep working.
+#[cfg(target_os = "linux")]
+pub fn local_ips() -> Vec<IpAddr> {
+    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: on success `head` is a list owned by us until `freeifaddrs`.
+    if unsafe { libc::getifaddrs(&mut head) } != 0 {
+        return lan_ip().into_iter().collect();
+    }
+    let mut ips = Vec::new();
+    let mut cur = head;
+    while !cur.is_null() {
+        // SAFETY: `cur` is a node of the list `getifaddrs` returned.
+        let ifa = unsafe { &*cur };
+        let up = ifa.ifa_flags & libc::IFF_UP as libc::c_uint != 0;
+        // SAFETY: a non-null `ifa_addr` points at a sockaddr; for AF_INET it
+        // is a sockaddr_in.
+        if up && !ifa.ifa_addr.is_null() && i32::from(unsafe { (*ifa.ifa_addr).sa_family }) == libc::AF_INET {
+            let sin = unsafe { &*ifa.ifa_addr.cast::<libc::sockaddr_in>() };
+            let ip = Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+            if !ip.is_loopback() {
+                ips.push(IpAddr::V4(ip));
+            }
+        }
+        cur = ifa.ifa_next;
+    }
+    // SAFETY: `head` came from `getifaddrs` and is freed once.
+    unsafe { libc::freeifaddrs(head) };
+    ips.sort();
+    ips.dedup();
+    ips
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn local_ips() -> Vec<IpAddr> {
+    lan_ip().into_iter().collect()
+}
+
+/// Serve `app` over HTTPS in the background, WebSockets included, with
+/// whichever certificate `config` holds when each connection arrives (none
+/// yet: the connection is dropped). Returns the bound address.
 pub async fn listen(
     addr: SocketAddr,
     app: Router,
-    config: Arc<rustls::ServerConfig>,
+    config: tokio::sync::watch::Receiver<Option<Arc<rustls::ServerConfig>>>,
 ) -> Result<(SocketAddr, tokio::task::JoinHandle<()>)> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("listen on {addr}"))?;
     let bound = listener.local_addr()?;
-    let acceptor = tokio_rustls::TlsAcceptor::from(config);
     let task = tokio::spawn(async move {
         loop {
             let (tcp, peer) = match listener.accept().await {
@@ -151,7 +193,13 @@ pub async fn listen(
                     continue;
                 }
             };
-            let (acceptor, app) = (acceptor.clone(), app.clone());
+            let Some(config) = config.borrow().clone() else {
+                debug!("https: no certificate yet; dropping {peer}");
+                continue;
+            };
+            let acceptor = tokio_rustls::TlsAcceptor::from(config);
+            // The router decides what another device may see by its address.
+            let app = app.clone().layer(axum::Extension(axum::extract::ConnectInfo(peer)));
             tokio::spawn(async move {
                 // A phone that doesn't trust the CA yet ends here.
                 let tls = match acceptor.accept(tcp).await {
@@ -240,16 +288,27 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[test]
+    fn local_addresses_include_the_routed_one_and_never_loopback() {
+        let ips = local_ips();
+        assert!(ips.iter().all(|ip| !ip.is_loopback()), "{ips:?}");
+        if let Some(ip) = lan_ip() {
+            assert!(ips.contains(&ip), "{ip} not in {ips:?}");
+        }
+    }
+
     #[tokio::test]
     async fn https_and_the_camera_socket_work_once_the_ca_is_trusted() {
         let dir = tmp("serve");
         let id = identity(&dir, &[IpAddr::V4(Ipv4Addr::LOCALHOST)]).unwrap();
         let phone = Phone {
             origin: "https://127.0.0.1:8443".into(),
+            setup_url: "http://127.0.0.1:8080/phone".into(),
             ca_der: id.ca_der.clone(),
         };
         let app = crate::router(None, &dir, Live::setup_only(Clock::start()).with_phone(phone));
-        let (addr, server) = listen("127.0.0.1:0".parse().unwrap(), app, id.config.clone()).await.unwrap();
+        let (_config_tx, config) = tokio::sync::watch::channel(Some(id.config.clone()));
+        let (addr, server) = listen("127.0.0.1:0".parse().unwrap(), app, config).await.unwrap();
         let name = ServerName::IpAddress(Ipv4Addr::LOCALHOST.into());
         let trusting = client(&[&id.ca_der]);
 

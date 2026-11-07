@@ -2,6 +2,7 @@
   import { getSession } from './api.js';
   import { clock, dateLabel, faultList, fixed, grouped, pace, timeLabel } from './format.js';
   import FaultRates from './FaultRates.svelte';
+  import Feel from './Feel.svelte';
   import Figures from './Figures.svelte';
   import ForceCurve from './ForceCurve.svelte';
   import StrokeCharts from './StrokeCharts.svelte';
@@ -79,6 +80,10 @@
         {#if detail.note}<span class="note">{detail.note}</span>{/if}
       </div>
     </header>
+
+    {#if !detail.simulated}
+      <Feel id={detail.id} effort={detail.effort} comment={detail.comment} />
+    {/if}
 
     <dl class="readout">
       {#each readout as r (r.label)}

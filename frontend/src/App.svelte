@@ -15,8 +15,8 @@
   let loaded = $state(false);
   let path = $state(location.pathname);
   const onCamera = $derived(path.startsWith('/camera'));
-  // The front screen gets the whole window.
-  const onMirror = $derived(path.startsWith('/mirror'));
+  // The row screen, in front of the erg, gets the whole window: it's home.
+  const onRow = $derived(path === '/' || path.startsWith('/mirror'));
   const onProgress = $derived(path.startsWith('/progress'));
   // A phone gets its own full-window pages: setup, then the camera.
   const onPhoneCamera = $derived(path.startsWith('/phone/camera'));
@@ -27,18 +27,53 @@
     return m ? Number(m[1]) : null;
   };
 
-  listSessions()
-    .then((list) => {
-      sessions = list;
-      current = fromPath() ?? list[0]?.id ?? null;
-    })
-    .catch((e) => (error = e.message))
-    .finally(() => (loaded = true));
+  function load() {
+    return listSessions()
+      .then((list) => {
+        sessions = list;
+        current = fromPath() ?? list[0]?.id ?? null;
+      })
+      .catch((e) => (error = e.message))
+      .finally(() => (loaded = true));
+  }
+  // The phone's pages can't see the sessions (only this computer can).
+  if (!location.pathname.startsWith('/phone')) load();
 
   function go(to) {
     history.pushState(null, '', to);
     path = to;
   }
+
+  // A row was saved: show its review, with the list brought up to date.
+  function saved(id) {
+    go(`/sessions/${id}`);
+    load();
+  }
+
+  // On a review page, a new row starting brings the row screen back.
+  $effect(() => {
+    if (onRow || onPhone) return;
+    let ws;
+    let timer;
+    let alive = true;
+    const connect = () => {
+      if (!alive) return;
+      ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/live`);
+      ws.onmessage = (e) => {
+        const m = JSON.parse(e.data);
+        if (m.type === 'row' && m.phase === 'rowing') go('/');
+      };
+      ws.onclose = () => {
+        if (alive) timer = setTimeout(connect, 3000);
+      };
+    };
+    connect();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+      ws?.close();
+    };
+  });
 
   function select(id) {
     current = id;
@@ -51,8 +86,8 @@
   });
 </script>
 
-{#if onMirror}
-  <MirrorPage />
+{#if onRow}
+  <MirrorPage onsaved={saved} />
 {:else if onPhoneCamera}
   <CameraPage phone />
 {:else if onPhone}
@@ -63,6 +98,14 @@
     <div class="brand">Row Assist</div>
     <Readiness />
     <Today />
+    <a
+      class="nav"
+      href="/"
+      onclick={(e) => {
+        e.preventDefault();
+        go('/');
+      }}>Row screen</a
+    >
     <a
       class="nav"
       class:here={onProgress}
@@ -81,7 +124,6 @@
         go('/camera');
       }}>Camera setup</a
     >
-    <a class="nav" href="/mirror" target="_blank" rel="noopener">Mirror (front screen) ↗</a>
     {#if sessions.length}
       <SessionList {sessions} current={onCamera || onProgress ? null : current} onselect={select} />
     {/if}
@@ -99,9 +141,7 @@
       <div class="empty">
         <p>No sessions yet.</p>
         <p class="muted">
-          Record one with <code>rowctl record --plan reference --speak</code>, or try it without the
-          erg: <code>rowctl simulate --out /tmp/ref.rowrec</code> then
-          <code>rowctl analyze /tmp/ref.rowrec</code>.
+          Open the <a href="/">row screen</a> and start rowing: it records from your first stroke.
         </p>
       </div>
     {/if}

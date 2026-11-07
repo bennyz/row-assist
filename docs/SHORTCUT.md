@@ -11,10 +11,10 @@ run resends the whole week, so a morning the laptop was asleep is filled in by t
 ## On the laptop
 
 1. Get the token: `rowctl health --token`.
-2. Serve on the network while the Shortcut runs: `rowctl serve --addr 0.0.0.0:8080`
-   (or record with `--listen 0.0.0.0:8080`). If a firewall runs, open port 8080.
-   Everything the server shows becomes readable on your home network; only posting
-   Watch data needs the token.
+2. Row Assist (`rowctl serve`, started at login) takes the upload on port 8080. Other
+   devices on the network can only post Watch data (with the token) and open the phone's
+   camera pages; sessions and readiness stay on the laptop. If a firewall runs, open ports
+   8080 and 8443.
 3. The laptop's address: `rowctl health --token` prints it. Reserve it in the router's DHCP
    settings so it stays the same (a `.local` name would need `avahi-daemon` running).
 
@@ -39,7 +39,9 @@ Create a new Shortcut named **Row Assist health** with these actions:
    (it is sent as JSON).
 
 Then **Automation → Create Personal Automation → Time of Day**, e.g. 09:00 daily, run
-**Row Assist health**, with *Ask Before Running* off.
+**Row Assist health**, with *Ask Before Running* off. It only gets through while the laptop
+is awake; a missed morning is filled in by the next run. Or just tap it before rowing: the
+row screen re-plans as soon as the data arrives.
 
 ## What gets sent
 
@@ -51,6 +53,8 @@ Then **Automation → Create Personal Automation → Time of Day**, e.g. 09:00 d
 }
 ```
 
+- Each list may also come as text with one item's JSON per line, which is what Shortcuts
+  sends when a list variable of dictionaries goes into the request's dictionary.
 - Dates: ISO 8601, `2026-11-01 03:12:00 +0200` (Health export style), or `2026-11-01`.
 - Values may be numbers or text that starts with one (`"48 ms"`).
 - Sleep: every stage counts as asleep except *In Bed* and *Awake*; overlapping samples

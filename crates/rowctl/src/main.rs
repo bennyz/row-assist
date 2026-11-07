@@ -6,6 +6,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
+mod app;
 mod check;
 mod ctx;
 mod health;
@@ -84,17 +85,9 @@ enum Command {
     Health(health::HealthArgs),
     /// What to row today, and why
     Plan(planning::PlanArgs),
-    /// Serve the review screen in the browser
-    Serve {
-        /// Address to listen on (0.0.0.0:8080 to reach it from another machine)
-        #[arg(long, default_value = "127.0.0.1:8080")]
-        addr: std::net::SocketAddr,
-        #[arg(long)]
-        db: Option<PathBuf>,
-        /// Built frontend [default: frontend/dist in this checkout]
-        #[arg(long, env = "ROW_ASSIST_WEB")]
-        web: Option<PathBuf>,
-    },
+    /// Run Row Assist: the page at http://localhost:8080 plans, records (from
+    /// your first stroke) and reviews every row. Meant to start at login
+    Serve(app::ServeArgs),
     /// Write a simulated session to a recording, instantly (for testing)
     Simulate {
         #[arg(long)]
@@ -163,7 +156,7 @@ pub fn default_web_dir() -> PathBuf {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn,devices=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn,devices=info,server=info")),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -172,7 +165,7 @@ async fn main() -> Result<()> {
     // Commands that print and exit should stop quietly when their output is
     // piped into something that closes early (`rowctl health | head`), as
     // Unix tools do. Not the ones that own devices and sockets.
-    if !matches!(cli.cmd, Command::Record { .. } | Command::Watch { .. } | Command::Serve { .. }) {
+    if !matches!(cli.cmd, Command::Record { .. } | Command::Watch { .. } | Command::Serve(_)) {
         default_sigpipe();
     }
     let result = match cli.cmd {
@@ -187,15 +180,7 @@ async fn main() -> Result<()> {
         Command::Profile(args) => profile::run(args).await,
         Command::Health(args) => health::run(args).await,
         Command::Plan(args) => planning::run(args).await,
-        Command::Serve { addr, db, web } => {
-            server::serve(server::Config {
-                addr,
-                db: db.unwrap_or_else(store::paths::db_path),
-                web_dir: web.unwrap_or_else(default_web_dir),
-                token: Some(store::health::token(&store::paths::token_path())?),
-            })
-            .await
-        }
+        Command::Serve(args) => app::run(args).await,
         Command::Simulate { out, minutes, watts, spm, hr, plan, note, pose, fault } => simulate::run(
             &out,
             simulate::SimArgs { minutes, watts, spm, hr, plan, note, pose, fault },

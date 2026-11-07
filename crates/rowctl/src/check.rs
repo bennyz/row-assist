@@ -11,7 +11,9 @@ pub fn run(file: &Path) -> Result<()> {
     let (_, events, _) = recording::read_all(file)?;
     let marked = blocks(&events);
     if marked.is_empty() {
-        println!("No marked blocks. While recording, type 0 (clean) or 1–4 (a fault on purpose) and Enter.");
+        println!(
+            "No marked blocks. While rowing, press Clean or a fault under \"Mark faults on purpose…\" on the row screen (or, with rowctl record, type 0 for clean or 1–4 for a fault and Enter)."
+        );
         return Ok(());
     }
     let a = analysis::analyze(&events, None);

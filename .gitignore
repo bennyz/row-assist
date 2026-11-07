@@ -6,3 +6,6 @@
 node_modules/
 frontend/dist/
 frontend/public/mediapipe/
+
+# Browser-automation output (screenshots and page snapshots can show real sessions)
+.playwright-mcp/

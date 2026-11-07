@@ -22,6 +22,9 @@ pub enum EventKind {
     Link(Link),
     /// A user annotation, e.g. "early arms on purpose" for fault fixtures.
     Marker { label: String },
+    /// What the coach said (aloud and on the screens), so a review can see
+    /// what each cue did.
+    Cue { text: String },
     /// Body landmarks from one camera frame, detected in the browser.
     Pose(Pose),
 }
@@ -103,6 +106,10 @@ pub struct Heart {
     pub rr_1024: Vec<u16>,
     /// Skin contact, when the strap reports it.
     pub contact: Option<bool>,
+    /// Read through the PM5's own connection to the strap: beats per minute
+    /// only, no intervals.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub via_pm5: bool,
 }
 
 impl Heart {
@@ -168,7 +175,7 @@ mod tests {
         let h = Heart {
             bpm: 60,
             rr_1024: vec![1024, 512],
-            contact: None,
+            ..Default::default()
         };
         assert_eq!(h.rr_ms().collect::<Vec<_>>(), vec![1000.0, 500.0]);
     }

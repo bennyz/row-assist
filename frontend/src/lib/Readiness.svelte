@@ -1,20 +1,7 @@
 <script>
   // Today's readiness from the Watch: a level with its reasons, never colour alone.
   import { getHealth } from './api.js';
-  import { fixed } from './format.js';
-
-  const LEVELS = {
-    green: { mark: '✓', label: 'Ready', tone: 'ok' },
-    amber: { mark: '▲', label: 'Go easy', tone: 'warn' },
-    red: { mark: '■', label: 'Recover', tone: 'bad' },
-    unknown: { mark: '?', label: 'No baseline yet', tone: 'muted' },
-  };
-  const ADVICE = {
-    green: 'Row as planned.',
-    amber: 'Easy only: no intensity today.',
-    red: 'Minimum session: 15–20 min easy, or rest.',
-    unknown: 'Needs two weeks of Watch data.',
-  };
+  import { READINESS, fixed } from './format.js';
 
   let health = $state(null);
   getHealth()
@@ -22,7 +9,7 @@
     .catch(() => (health = null));
 
   const r = $derived(health?.readiness);
-  const level = $derived(LEVELS[r?.level] ?? LEVELS.unknown);
+  const level = $derived(READINESS[r?.level] ?? READINESS.unknown);
 </script>
 
 {#if health?.days?.length}
@@ -31,7 +18,7 @@
       <span class="mark" aria-hidden="true">{level.mark}</span>
       <strong>{level.label}</strong>
     </div>
-    <p class="advice">{ADVICE[r.level]}</p>
+    <p class="advice">{level.advice}</p>
     {#if r.reasons.length}
       <ul>
         {#each r.reasons as reason (reason)}<li>{reason}</li>{/each}

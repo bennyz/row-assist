@@ -1,38 +1,16 @@
 <script>
-  // What to row today, from the planner: the session, why, and the command.
+  // What to row today, from the planner: the session and why. The row screen
+  // (/) is set up for it and records from the first stroke.
   import { getToday } from './api.js';
-
-  const KINDS = {
-    reference: 'Reference row',
-    easy: 'Easy row',
-    steady: 'Steady row',
-    rate_steps: 'Rate steps',
-    rate20_test: 'Rate-20 test',
-    minimum: 'Minimum session',
-  };
+  import { KINDS, minutesLabel } from './format.js';
 
   let t = $state(null);
-  let copied = $state(false);
   getToday()
     .then((x) => (t = x))
     .catch(() => (t = null));
 
   const p = $derived(t?.proposal);
-  const minutes = $derived(p ? (p.minutes[0] === p.minutes[1] ? `${p.minutes[0]} min` : `${p.minutes[0]}–${p.minutes[1]} min`) : '');
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(t.command);
-      copied = true;
-      setTimeout(() => (copied = false), 1500);
-    } catch {
-      // No clipboard access (e.g. plain http on another machine): select it instead.
-      const range = document.createRange();
-      range.selectNodeContents(document.getElementById('today-cmd'));
-      getSelection().removeAllRanges();
-      getSelection().addRange(range);
-    }
-  }
+  const minutes = $derived(p ? minutesLabel(p.minutes) : '');
 </script>
 
 {#if p}
@@ -45,11 +23,6 @@
       </ul>
     {/if}
     {#if t.pm5_setup}<p class="setup">On the PM5: {t.pm5_setup}</p>{/if}
-    <div class="cmd">
-      <!-- Break only between words: "--speak" mustn't split at its hyphens. -->
-      <code id="today-cmd">{#each t.command.split(' ') as tok, i (i)}<span class="tok">{tok}</span>{' '}{/each}</code>
-      <button onclick={copy}>{copied ? 'Copied' : 'Copy'}</button>
-    </div>
   </section>
 {/if}
 
@@ -78,26 +51,5 @@
   .setup {
     margin: 0.4rem 0 0;
     color: var(--ink-2);
-  }
-  .cmd {
-    display: grid;
-    gap: 0.35rem;
-    margin-top: 0.6rem;
-  }
-  code {
-    display: block;
-    font: 12px/1.4 var(--font-num);
-    color: var(--ink);
-    background: var(--surface);
-    border: 1px solid var(--rule);
-    border-radius: 4px;
-    padding: 0.4rem 0.5rem;
-  }
-  .tok {
-    white-space: nowrap;
-  }
-  button {
-    justify-self: start;
-    font-size: 12px;
   }
 </style>

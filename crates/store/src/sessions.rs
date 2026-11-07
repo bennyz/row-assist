@@ -22,7 +22,19 @@ pub struct SessionRow {
     pub id: i64,
     pub meta: SessionMeta,
     pub summary: Summary,
+    pub feel: Feel,
 }
+
+/// How the row felt, from the review screen.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Feel {
+    /// 1 (very easy) to 10 (all out).
+    pub effort: Option<u8>,
+    /// Anything worth knowing: sleep, a sore back, a stop to fix the strap.
+    pub comment: Option<String>,
+}
+
+pub const MAX_EFFORT: u8 = 10;
 
 /// Insert or replace the session for this recording, with all its strokes.
 pub async fn save_session(
@@ -115,7 +127,23 @@ pub async fn save_session(
     Ok(id)
 }
 
-const SESSION_COLUMNS: &str = "id, started_at_us, recording, note, plan, simulated, summary";
+const SESSION_COLUMNS: &str = "id, started_at_us, recording, note, plan, simulated, summary, effort, comment";
+
+/// Save how session `id` felt. False when there's no such session.
+pub async fn set_feel(pool: &SqlitePool, id: i64, feel: &Feel) -> Result<bool> {
+    if feel.effort.is_some_and(|e| !(1..=MAX_EFFORT).contains(&e)) {
+        bail!("effort is 1 to {MAX_EFFORT}");
+    }
+    let comment = feel.comment.as_deref().map(str::trim).filter(|c| !c.is_empty());
+    let done = sqlx::query("UPDATE sessions SET effort = ?, comment = ? WHERE id = ?")
+        .bind(feel.effort)
+        .bind(comment)
+        .bind(id)
+        .execute(pool)
+        .await
+        .context("save how the row felt")?;
+    Ok(done.rows_affected() == 1)
+}
 
 /// All sessions, oldest first.
 pub async fn list_sessions(pool: &SqlitePool) -> Result<Vec<SessionRow>> {
@@ -145,6 +173,10 @@ fn session_row(r: &SqliteRow) -> Result<SessionRow> {
             simulated: r.try_get("simulated")?,
         },
         summary: serde_json::from_str(&summary).context("stored summary")?,
+        feel: Feel {
+            effort: r.try_get("effort")?,
+            comment: r.try_get("comment")?,
+        },
     })
 }
 
@@ -298,6 +330,23 @@ mod tests {
         assert_eq!(get_session(&pool, id).await.unwrap().unwrap(), all[0]);
         assert!(get_session(&pool, id + 1).await.unwrap().is_none());
         assert_eq!(session_strokes(&pool, id).await.unwrap(), strokes[..2].to_vec());
+        assert_eq!(all[0].feel, Feel::default());
+
+        // How it felt is the rower's: re-analysing keeps it.
+        let felt = Feel {
+            effort: Some(6),
+            comment: Some("slept badly ".into()),
+        };
+        assert!(set_feel(&pool, id, &felt).await.unwrap());
+        save_session(&pool, &meta, &summary, &strokes).await.unwrap();
+        let kept = get_session(&pool, id).await.unwrap().unwrap().feel;
+        assert_eq!((kept.effort, kept.comment.as_deref()), (Some(6), Some("slept badly")));
+        assert!(!set_feel(&pool, id + 1, &felt).await.unwrap(), "no such session");
+        let too_hard = Feel { effort: Some(11), comment: None };
+        assert!(set_feel(&pool, id, &too_hard).await.is_err());
+        let blank = Feel { effort: None, comment: Some("  ".into()) };
+        assert!(set_feel(&pool, id, &blank).await.unwrap());
+        assert_eq!(get_session(&pool, id).await.unwrap().unwrap().feel, Feel::default(), "cleared");
 
         pool.close().await;
         std::fs::remove_dir_all(&dir).unwrap();

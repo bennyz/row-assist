@@ -45,17 +45,21 @@ Useful formulas:
   one device can't do both. The camera watches from the side; a screen past the flywheel at
   eye level shows the rower their position without turning the head (a wall mirror forces a
   head turn, breaking the posture being checked).
-- **The setup:** a spare iPhone side-on runs the camera page in Safari (`--phone`) and does the
-  pose work itself; only landmarks cross the Wi-Fi. The Linux laptop stands in front, runs
-  `rowctl` (PM5 on USB, H10 over BLE) and shows the mirror. The camera's setup check is also
-  shown on the mirror, because the phone's screen faces away from the rower.
+- **The setup:** a spare iPhone side-on runs the camera page in Safari and does the pose work
+  itself; only landmarks cross the Wi-Fi. The Linux laptop stands in front and runs
+  `rowctl serve` from login (PM5 on USB, H10 over BLE); its browser shows the row screen at
+  `http://localhost:8080`. The camera's setup check is also shown there, because the phone's
+  screen faces away from the rower. Nothing is typed per row (§4, *One server*).
 - **Browsers only open the camera on `localhost` or HTTPS.** A camera page on the server machine
   uses `localhost`. A phone uses HTTPS (`server::tls`): a local CA is made once in
-  `<data>/tls/` (key mode 0600) and installed and trusted on the phone once; each start issues a
-  server certificate for the current LAN address (397 days, serverAuth, IP in the SAN: what iOS
-  requires). `rowctl` prints a QR code for `http://<lan-ip>:8080/phone`, a setup page that
-  checks whether the phone trusts the CA yet and links to the HTTPS camera page on `:8443`.
-  The front screen needs no camera, so plain HTTP over the LAN is fine.
+  `<data>/tls/` (key mode 0600) and installed and trusted on the phone once; a server
+  certificate is issued for the current LAN address, and again within 10 s whenever it changes
+  (397 days, serverAuth, IP in the SAN: what iOS requires). The row screen shows a QR code
+  (`rowctl` also prints it) for `http://<lan-ip>:8080/phone`, a setup page that checks whether
+  the phone trusts the CA yet and links to the HTTPS camera page on `:8443`.
+- **Only the laptop sees the data.** The server listens on the network for the phone, but
+  another device gets only the app's files, the phone's setup and camera socket, and the
+  token-guarded Watch upload; sessions, health and the row answer 403 (`server::local_only`).
 - **Light beats pixels.** The phone's camera beats the laptop's webcam (720p MJPEG only) mainly in dim
   light: pose breaks on noise and motion blur, not resolution (the model works on a ~256 px
   crop). Whole body and full slide in frame; light from the camera side, never behind the rower.
@@ -71,13 +75,22 @@ Useful formulas:
 
 | Source | Transport | Signals | Rate | Used for |
 |---|---|---|---|---|
-| PM5 | USB HID, CSAFE | stroke state, watts, pace, spm, distance, drag factor, force curve | ~20 Hz status; force curve per drive | stroke boundaries (master clock), effort, force-curve technique |
+| PM5 | USB HID, CSAFE | stroke state, watts, pace, spm, distance, drag factor, force curve; heart rate of a strap paired to it | ~20 Hz status; force curve per drive; HR 1 Hz | stroke boundaries (master clock), effort, force-curve technique; zones when the strap is paired to the PM5 |
 | Polar H10 | BLE HR service (0x180D) + Polar PMD | HR, RR intervals; chest accelerometer (experimental) | per beat | zones, load, drift; HRV |
 | Phone camera | Safari, MediaPipe Pose Landmarker | 33 body landmarks (near side used) | ~30 fps | posture, drive/recovery sequencing |
 | Apple Watch | iPhone Shortcut → HTTP POST | overnight HRV (SDNN), resting HR, sleep | daily | readiness, Karvonen HR zones |
 | Concept2 log | CSV import (later: Logbook API) | historic sessions | one-off / sync | baselines from May 2025 |
 
-Video never leaves the browser; only landmark coordinates are sent to the server.
+Video never leaves the browser; only landmark coordinates are sent to the server. The
+exception is stills (640 pixels, the detected body drawn on), asked of the camera page one at a
+time and served to the laptop only:
+- For setting the camera up, the row screen asks for one every couple of seconds while "Show
+  what the camera sees" is open; it's held in memory until the next one.
+- During a row, `rowctl serve` saves one 5 s after the first stroke and then every 20 s (about
+  60 in 20 minutes, landing on every part of the stroke), in a folder beside the recording:
+  `<row>.stills/<µs>.jpg`, named by the session time it was asked at (the page draws the frame
+  it has when the request arrives). They're for checking the detected body against the real
+  one; the rower chose to keep them.
 
 ---
 
@@ -93,6 +106,28 @@ Video never leaves the browser; only landmark coordinates are sent to the server
                             │ SQLite                                            │
                             └───────────────────────────────────────────────────┘
 ```
+
+**One server (`rowctl serve`, `rowctl::app`).** One process, started at login
+(`contrib/systemd/`), runs the whole loop; the browser only shows it:
+- The devices stay connected (both drivers reconnect on their own). While waiting, the last
+  20 s of events are kept; the first stroke starts a recording with them, set up as the
+  planner's row (preset, length, focus).
+- A row ends after `--end-after` (120 s) without a stroke, or Stop on the page; a shutdown
+  saves it too. Under 10 strokes is a bump of the handle and is dropped. The row is analysed
+  and saved, the page opens its review, and the next row is planned (also at midnight, and
+  when Watch data arrives while waiting: `Api::health_posted`).
+- Besides the devices' events, the recording gets every cue the coach gave (`Cue`), the
+  blocks the rower marks on the row screen (`Marker`, `POST /api/row/mark`), and the plan and
+  focus in its header; camera stills go beside it (§3). On the review, the rower scores how
+  hard it felt (1–10) and adds a comment (`PUT /api/sessions/{id}/feel`, stored on the
+  session, kept when it's re-analysed): what the numbers can't say (sleep, a hot room, a
+  sore back, a stop to fix the strap).
+- State goes to the page on `/ws/live` every second (`{"type":"row",…}`, `server::row`), and
+  `POST /api/row/stop` ends a row.
+- The session clock counts with `CLOCK_BOOTTIME`, so a server running across suspend still
+  dates the next morning's row correctly.
+- `record` and `watch` still work for testing, with the server stopped (they need the PM5,
+  the strap and port 8080).
 
 ### 4.1 Core principles
 
@@ -118,9 +153,10 @@ once, advanced monotonically).
 | `Heart` | done | bpm, RR intervals (1/1024 s, as sent), skin contact |
 | `Link` | done | device connected / dropped, with name or error |
 | `Marker` | done | user annotation (deliberate-fault fixtures) |
+| `Cue` | done | what the coach said, when |
 | `H10Accel` | planned | chest accelerometer samples |
 | `Pose` | done | capture time (browser clock), frame size, 9 joints × both sides as `[x, y, visibility]` (`model::POSE_JOINTS`) |
-| coach/control | planned | session start/stop, focus chosen, cue spoken |
+| coach/control | partly | cues are `Cue` events and the focus is in the header; session start/stop planned |
 
 Session files (`crates/recording`): the 8-byte magic `ROWREC01`, then a zstd stream of
 length-prefixed **MessagePack** frames with structs encoded as maps, so an optional field
@@ -264,8 +300,8 @@ The front screen shows the rower's own position, drawn from landmarks (no video 
   warm-up and the start of a focus block; audio only during steady pieces; regular
   no-feedback blocks to check the fix stuck. The planner schedules these.
 
-**Built:** `/mirror`, fed by `/ws/live` from `rowctl record --camera` (any number of screens;
-`--listen 0.0.0.0:8080` for the Lenovo in front). The live figure is anchored at the ankle so the
+**Built:** the row screen (`/`, also `/mirror`), fed by `/ws/live` from `rowctl serve` (or
+`record --camera`). The live figure is anchored at the ankle so the
 body slides as it does on the erg; guides are a shin-vertical line and the catch (15–30° forward)
 and finish (5–30° back) body-angle wedges, sent by the server
 (`analysis::technique::{CATCH,FINISH}_TRUNK_GUIDE`). Beside it, the last stroke frozen at catch
@@ -277,9 +313,11 @@ video.
 *on purpose* (e.g., 20 strokes bending the arms early). The detector must flag those strokes
 and stay quiet on clean ones.
 
-**Built:** during `rowctl record`, type `0` (clean) or `1`–`4` (short compression, shooting
-the slide, early arms, rushed recovery) + Enter as each block starts; they're stored as
-`Marker` events. `rowctl check <file>` scores every block (`analysis::fixtures`), skipping
+**Built:** on the row screen, "Mark faults on purpose…" opens a button per block (Clean, or
+one of the four faults); press one as each block starts. A mark before the first stroke
+starts the row with it. During `rowctl record`, type `0` (clean) or `1`–`4` (short
+compression, shooting the slide, early arms, rushed recovery) + Enter instead. Either way
+they're stored as `Marker` events. `rowctl check <file>` scores every block (`analysis::fixtures`), skipping
 its first 2 strokes: a fault block passes if the focus coach would have cued that fault, a
 clean block if it would have cued nothing, with each fault's flag rate alongside. Suggested
 fixture: 2 min clean, 2 min of one fault, 2 min clean, per fault.
@@ -406,18 +444,19 @@ Fitness after a long gap is unknown, so the ramp measures it:
 
 Visual language from `.impeccable.md`: dark, instrument-panel, amber accent, Chakra Petch numerals.
 
-1. **Setup check** (laptop): camera framing with skeleton overlay, device status, drag factor,
-   readiness, today's workout and focus.
-2. **Live / mirror** (front screen): stick-figure mirror with target guides and last-stroke
-   freeze frames (§5.3), focus cue, HR + zone, current fault rate, force curve trace.
+1. **Row screen** (`/`, the laptop in front, built): before the first stroke, the next row's
+   plan, cues and readiness, the devices, and the phone's QR code while no camera is
+   connected; while rowing, the mirror (§5.3) with recording time, strokes, a countdown once
+   resting, and Stop. A saved row opens its review; a row starting brings the screen back.
+   Later: drag factor, current fault rate, force curve trace.
+2. *(merged into 1)*
 3. **Session review** (laptop, built: `rowctl serve`): readout strip (time, metres, pace, watts,
    spm, HR, EF) and secondary numbers; time in zones as a segmented bar; power, rate and HR per
    stroke as small multiples on one time axis with a shared crosshair; the selected stroke's
    force curve against the session mean, with jumps to the most- and least-work strokes; every
    stroke as a table. Amber always means "the selected stroke". Steady rows of 15+ min show
    their EF against past pieces at similar power, and a reference row its ramp verdict. The
-   sidebar carries readiness and **Today** (the planner's session, reasons and the command
-   to copy; `/api/today`).
+   sidebar carries readiness and **Today** (the planner's session and reasons; `/api/today`).
 4. **Progress** (built: `/progress`, `analysis::progress`): watts at 20 against the 100 W
    milestone (app strokes at 19.5–20.5 spm; logbook pieces averaged at 20 spm, shown faint),
    EF of comparable steady rows (≥ 15 min, 16–22 spm, 43–63 W only: EF climbs with power),
@@ -440,10 +479,11 @@ crates/
   store/      data paths, SQLite (sqlx, migrations), Concept2 CSV importer
   rowctl/     CLI: record, watch, analyze, sessions, profile, simulate, dump, replay, curves,
               pm5-probe, import-c2, history
-  server/     axum: JSON API over sessions + the built frontend (`rowctl serve`); later WebSocket, coach
+  server/     axum: JSON API, camera and live sockets, phone HTTPS, row state (`/api/row`), the frontend
 frontend/     Svelte 5 + Vite: review (built); later setup, camera (@mediapipe/tasks-vision), live, progress
 migrations/
 contrib/udev/ hidraw access rule for the PM5
+contrib/systemd/ user service: `rowctl serve` at login
 fixtures/     recorded sessions used by tests
 docs/
 ```
@@ -492,7 +532,11 @@ Each phase ends with something usable on the erg.
 - **PM5 workout programming over CSAFE**: v1 got PREVREJECT for workout sub-commands (see
   §8.4); the standard-command experiment is ready (`rowctl pm5-probe --workout`) and needs a
   PM5.
-- **H10 connections**: PM5 + laptop at the same time must be verified.
+- **H10 connections**: while the H10 is paired to the PM5, the laptop doesn't see it at all (2026-11-06).
+  So the PM5 passes on its heart rate (CSAFE `GETHRCUR`, answered 84 bpm on real hardware) as
+  `Heart { via_pm5 }`: bpm only, no RR intervals. A strap connected to the laptop directly wins and
+  the relayed beats are dropped (`HeartPick`). Nothing uses RR intervals yet; HRV during a row would
+  need the strap paired to the laptop instead.
 - **HR max** is unknown; zones stay provisional (age estimate) until set or a hard effort is recorded.
 - **Which PM5 poll carries a stroke's power and rate** is assumed (the last one before the next
   catch). A real recording will show whether the value changes at the end of the drive or at

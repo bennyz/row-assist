@@ -139,6 +139,7 @@ impl Sim {
                 bpm: bpm.round() as u16,
                 rr_1024: vec![(60.0 / bpm * 1024.0).round() as u16],
                 contact: Some(true),
+                ..Default::default()
             }));
         }
         if let Some(ps) = self.cfg.pose.clone() {

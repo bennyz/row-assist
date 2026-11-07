@@ -1,11 +1,22 @@
 <script>
-  // The front screen: your body live, with guides, and the last stroke frozen
-  // at catch and finish. Read from the erg, so everything is big. Figures and
-  // guides come from the server (/ws/live); this page only draws.
+  // The row screen, in front of the erg: your body live, with guides, and the
+  // last stroke frozen at catch and finish. With `rowctl serve` it also shows
+  // the row's state and devices, the next row's plan before the first stroke,
+  // and the phone's code while no camera is connected; when a row is saved it
+  // hands over to the review (`onsaved`). Read from the erg, so everything is
+  // big. Everything comes from the server (/ws/live); this page only draws.
   import { onDestroy, onMount } from 'svelte';
   import { BONES } from './pose.js';
+  import CameraStill from './CameraStill.svelte';
   import { FAULTS, fixed } from './format.js';
+  import { stopRow } from './api.js';
   import Figures from './Figures.svelte';
+  import MarkBar from './MarkBar.svelte';
+  import NextRow from './NextRow.svelte';
+  import PhoneSetup from './PhoneSetup.svelte';
+  import RowBar from './RowBar.svelte';
+
+  let { onsaved } = $props();
 
   const MODE_KEY = 'row-assist.mirror-mode';
   const CUE_SHOWN_MS = 6000;
@@ -24,6 +35,11 @@
   // The camera's setup check; gone when the camera page stops sending it.
   let setup = $state(null);
   let setupTimer;
+  // The row `rowctl serve` runs (null with `rowctl record`).
+  let row = $state(null);
+  // How the last row ended when this page opened: only later ones hand over.
+  let seenEnd;
+  let note = $state(null);
   let ws;
   let alive = true;
 
@@ -64,6 +80,17 @@
         setup = m;
         clearTimeout(setupTimer);
         setupTimer = setTimeout(() => (setup = null), 2000);
+      } else if (m.type === 'row') {
+        const end = m.last?.at_us ?? null;
+        if (seenEnd === undefined) {
+          seenEnd = end;
+        } else if (end !== seenEnd) {
+          seenEnd = end;
+          if (m.last.session != null) onsaved?.(m.last.session);
+          else note = `${m.last.strokes} strokes: too short to keep.`;
+        }
+        if (m.phase === 'rowing') note = null;
+        row = m;
       } else if (m.type === 'cue') {
         cue = m.text;
         clearTimeout(cueTimer);
@@ -131,6 +158,8 @@
 
 <div class="mirror">
   <header>
+    {#if row}<RowBar {row} onstop={stopRow} />{/if}
+    <div class="top">
     <dl class="numbers">
       <div><dd class="num">{fixed(last?.rate, 1)}</dd><dt>spm</dt></div>
       <div><dd class="num">{fixed(last?.watts)}</dd><dt>watts</dt></div>
@@ -142,13 +171,16 @@
     <div class="mode" role="group" aria-label="What to show">
       <button aria-pressed={mode === 'mirror'} onclick={() => setMode('mirror')}>Mirror</button>
       <button aria-pressed={mode === 'numbers'} onclick={() => setMode('numbers')}>Numbers only</button>
+      {#if row}<a class="review" href="/sessions">Sessions</a>{/if}
     </div>
+    </div>
+    {#if row}<MarkBar mark={row.mark} />{/if}
   </header>
 
   {#if link !== 'open'}
     <p class="state">Connecting to Row Assist…</p>
   {:else if !live}
-    <p class="state">No session running. Start one with <code>rowctl record --camera</code> (or <code>--phone</code>).</p>
+    <p class="state">Row Assist isn’t running. Start it with <code>rowctl serve</code>.</p>
   {:else if mode === 'mirror'}
     <div class="stage">
       <svg viewBox="0 0 {W} {H}" role="img" aria-label="Your body now, with target guides">
@@ -169,9 +201,13 @@
         {/each}
       </svg>
       {#if !anchored}
-        <p class="overlay">
-          {setup ? 'The camera is on but can’t see you yet.' : 'Waiting for the camera: open /camera on the computer, or scan the code rowctl printed with the phone.'}
-        </p>
+        {#if row && row.devices.camera.connected !== true}
+          <div class="overlay"><PhoneSetup /></div>
+        {:else}
+          <p class="overlay">
+            {setup ? 'The camera is on but can’t see you yet.' : 'Waiting for the camera: open /camera on this computer, or scan the code rowctl printed with the phone.'}
+          </p>
+        {/if}
       {/if}
     </div>
 
@@ -186,11 +222,19 @@
           </ul>
         </section>
       {/if}
+      {#if row?.devices.camera.connected === true && row.phase !== 'rowing'}
+        <CameraStill />
+      {/if}
+      {#if note}<p class="note">{note}</p>{/if}
+      {#if row?.phase === 'ready' && row.plan}
+        <NextRow plan={row.plan} watchAt={row.watch_at_us} />
+      {:else}
       <h2>Last stroke</h2>
       {#if frozen}
         <Figures stroke={frozen} typicalCatch={last.typical_catch} typicalFinish={last.typical_finish} height={170} />
       {:else}
         <p class="muted">Row a few strokes.</p>
+      {/if}
       {/if}
     </aside>
   {/if}
@@ -219,9 +263,18 @@
   }
   header {
     grid-column: 1 / -1;
+    display: grid;
+    gap: 1.25rem;
+  }
+  .top {
     display: flex;
     justify-content: space-between;
     align-items: start;
+  }
+  .note {
+    margin: 0 0 1.5rem;
+    font-size: 18px;
+    color: var(--ink-2);
   }
   .numbers {
     display: flex;
@@ -247,6 +300,11 @@
   .mode {
     display: flex;
     gap: 0.5rem;
+  }
+  .review {
+    align-self: center;
+    margin-left: 0.75rem;
+    color: var(--ink-2);
   }
   .mode button[aria-pressed='true'] {
     color: var(--ink);
@@ -311,6 +369,8 @@
     display: grid;
     place-items: center;
     margin: 0;
+    /* Over the guides: they mean nothing without a body. */
+    background: var(--surface);
     color: var(--ink-2);
     font-size: 20px;
   }

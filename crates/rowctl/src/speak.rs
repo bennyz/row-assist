@@ -12,6 +12,7 @@ const PROGRAMS: &[&str] = &["say"];
 #[cfg(not(target_os = "macos"))]
 const PROGRAMS: &[&str] = &["spd-say", "espeak-ng", "espeak"];
 
+#[derive(Clone)]
 pub struct Speaker {
     tx: SyncSender<String>,
     pub program: String,

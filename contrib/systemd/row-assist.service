@@ -1,0 +1,22 @@
+# Row Assist at login: `rowctl serve`, the row screen at http://localhost:8080.
+#
+#   cargo install --path crates/rowctl
+#   cp contrib/systemd/row-assist.service ~/.config/systemd/user/
+#   systemctl --user enable --now row-assist
+#
+# Logs: journalctl --user -u row-assist -f
+# Stop it to use `rowctl record` or `pm5-probe` (they need the PM5 and port 8080):
+#   systemctl --user stop row-assist
+
+[Unit]
+Description=Row Assist (rowctl serve)
+
+[Service]
+ExecStart=%h/.cargo/bin/rowctl serve
+Restart=on-failure
+RestartSec=5
+# Time to save a row in progress on shutdown.
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

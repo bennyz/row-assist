@@ -1,34 +1,70 @@
 //! `/ws/camera`: the camera page streams pose landmarks in; the server stamps
 //! them on the session clock, forwards them to the recorder (when there is
 //! one), and answers with the framing check twice a second.
+//!
+//! Video stays on the phone. The exception is stills: small pictures with the
+//! detected body drawn on, asked of the page one at a time. `GET
+//! /api/camera/still.jpg` (this machine only) shows one for setting the
+//! camera up, kept in memory until the next; `rowctl serve` also saves one
+//! every so often during a row, beside its recording, to check the detected
+//! body against the real one.
 
 use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use analysis::pose::{Framing, framing};
 use anyhow::{Result, bail};
+use axum::body::Bytes;
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::response::Response;
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use model::{Clock, Device, Event, EventKind, Link, POSE_JOINTS, Pose};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::{self, error::TrySendError};
-use tracing::{info, warn};
+use tokio::sync::watch;
+use tracing::{debug, info, warn};
 
 /// Frames the framing check looks back over.
 const WINDOW_US: i64 = 1_000_000;
 const FRAMING_EVERY: Duration = Duration::from_millis(500);
+/// How long the page asking for a still waits for the phone.
+const STILL_WAIT: Duration = Duration::from_secs(3);
+/// Bigger than this isn't a still (a 640-pixel JPEG is about 50 KB).
+const STILL_MAX: usize = 1 << 20;
+
+/// Stills of what the camera sees, for setting it up.
+#[derive(Clone)]
+struct Stills {
+    /// Counts requests; the camera page's session sees each one.
+    asked: watch::Sender<u64>,
+    /// The latest still, with the request count it answered.
+    latest: watch::Sender<Option<(u64, Bytes)>>,
+}
+
+impl Default for Stills {
+    fn default() -> Self {
+        Self {
+            asked: watch::channel(0).0,
+            latest: watch::channel(None).0,
+        }
+    }
+}
 
 /// Where camera frames go.
 #[derive(Clone)]
 pub struct Live {
     clock: Clock,
     tx: Option<mpsc::Sender<Event>>,
-    busy: Arc<AtomicBool>,
+    /// The newest camera page; an older one stops when it sees a newer one.
+    current: Arc<AtomicU64>,
+    stills: Stills,
     broadcast: Option<crate::live::LiveSender>,
-    phone: Option<Arc<crate::phone::Phone>>,
+    /// Set once the machine has a network address, and replaced when it
+    /// changes (the server runs for days; Wi-Fi comes and goes).
+    phone: Arc<RwLock<Option<Arc<crate::phone::Phone>>>>,
 }
 
 impl Live {
@@ -37,9 +73,10 @@ impl Live {
         Self {
             clock,
             tx: None,
-            busy: Arc::default(),
+            current: Arc::default(),
+            stills: Stills::default(),
             broadcast: None,
-            phone: None,
+            phone: Arc::default(),
         }
     }
 
@@ -48,9 +85,10 @@ impl Live {
         Self {
             clock,
             tx: Some(tx),
-            busy: Arc::default(),
+            current: Arc::default(),
+            stills: Stills::default(),
             broadcast: None,
-            phone: None,
+            phone: Arc::default(),
         }
     }
 
@@ -68,14 +106,19 @@ impl Live {
 
     /// The camera page is also served over HTTPS for a phone.
     pub fn with_phone(self, phone: crate::phone::Phone) -> Self {
-        Self {
-            phone: Some(Arc::new(phone)),
-            ..self
+        self.set_phone(Some(phone));
+        self
+    }
+
+    /// Shared by every clone: the setup page sees the change at once.
+    pub fn set_phone(&self, phone: Option<crate::phone::Phone>) {
+        if let Ok(mut slot) = self.phone.write() {
+            *slot = phone.map(Arc::new);
         }
     }
 
-    pub fn phone(&self) -> Option<&crate::phone::Phone> {
-        self.phone.as_deref()
+    pub fn phone(&self) -> Option<Arc<crate::phone::Phone>> {
+        self.phone.read().ok().and_then(|p| p.clone())
     }
 }
 
@@ -97,6 +140,13 @@ struct Ping {
     ping: f64,
 }
 
+/// How the page is getting on (loading, the camera, errors): a phone has no
+/// console, so it says so here and it lands in the log.
+#[derive(Deserialize)]
+struct Note {
+    note: String,
+}
+
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Reply<'a> {
@@ -105,6 +155,8 @@ enum Reply<'a> {
     Framing(&'a Framing),
     Clock { ping: f64, server_us: i64 },
     Error { message: String },
+    /// Send a still of what the camera sees.
+    Still,
 }
 
 fn parse_frame(text: &str) -> Result<Pose> {
@@ -123,17 +175,42 @@ fn parse_frame(text: &str) -> Result<Pose> {
     })
 }
 
-pub async fn upgrade(ws: WebSocketUpgrade, State(live): State<Live>) -> Response {
-    ws.on_upgrade(move |socket| session(socket, live))
+impl Live {
+    /// A still of what the camera sees now, as a JPEG; `None` when no camera
+    /// page answers within a few seconds.
+    pub async fn still(&self) -> Option<Bytes> {
+        let mut latest = self.stills.latest.subscribe();
+        let mut n = 0;
+        self.stills.asked.send_modify(|asked| {
+            *asked += 1;
+            n = *asked;
+        });
+        let answered = tokio::time::timeout(
+            STILL_WAIT,
+            latest.wait_for(|s| s.as_ref().is_some_and(|(k, _)| *k >= n)),
+        )
+        .await;
+        match answered {
+            Ok(Ok(s)) => s.as_ref().map(|(_, b)| b.clone()),
+            _ => None,
+        }
+    }
 }
 
-/// Frees the camera slot however the session ends.
-struct Slot(Arc<AtomicBool>);
-
-impl Drop for Slot {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+/// `GET /api/camera/still.jpg`: what the camera sees now, from the phone.
+pub async fn still(State(live): State<Live>) -> Response {
+    match live.still().await {
+        Some(jpeg) => ([(header::CONTENT_TYPE, "image/jpeg"), (header::CACHE_CONTROL, "no-store")], jpeg).into_response(),
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The camera page didn't answer: is it open, and in front, on the phone?",
+        )
+            .into_response(),
     }
+}
+
+pub async fn upgrade(ws: WebSocketUpgrade, State(live): State<Live>) -> Response {
+    ws.on_upgrade(move |socket| session(socket, live))
 }
 
 async fn send(socket: &mut WebSocket, reply: &Reply<'_>) -> bool {
@@ -143,13 +220,12 @@ async fn send(socket: &mut WebSocket, reply: &Reply<'_>) -> bool {
     }
 }
 
+/// One camera page at a time, and the newest wins: it's the one in front of
+/// the rower (a reload, or the phone after the laptop's own camera page). The
+/// older one is told and stops, so the two don't take turns.
 async fn session(mut socket: WebSocket, live: Live) {
-    if live.busy.swap(true, Ordering::SeqCst) {
-        let message = "Another camera page is already connected; close it first".to_string();
-        send(&mut socket, &Reply::Error { message }).await;
-        return;
-    }
-    let _slot = Slot(live.busy.clone());
+    let me = live.current.fetch_add(1, Ordering::SeqCst) + 1;
+    let replaced = || live.current.load(Ordering::SeqCst) != me;
     let mut tx = live.tx.clone();
     let link = |connected: bool| Event {
         t_us: live.clock.now_us(),
@@ -167,10 +243,17 @@ async fn session(mut socket: WebSocket, live: Live) {
         return;
     }
 
+    let mut asked = live.stills.asked.subscribe();
+    asked.mark_unchanged();
     let mut window: VecDeque<Pose> = VecDeque::new();
     let mut tick = tokio::time::interval(FRAMING_EVERY);
     let (mut dropped, mut bad) = (0u64, 0u64);
     loop {
+        if replaced() {
+            let message = "The camera page was opened again somewhere else, so this one stopped. Reload it to use this one.".to_string();
+            send(&mut socket, &Reply::Error { message }).await;
+            break;
+        }
         tokio::select! {
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Text(text))) => {
@@ -179,6 +262,10 @@ async fn session(mut socket: WebSocket, live: Live) {
                         if !send(&mut socket, &reply).await {
                             break;
                         }
+                        continue;
+                    }
+                    if let Ok(Note { note }) = serde_json::from_str::<Note>(&text) {
+                        info!("camera page: {}", note.chars().take(300).collect::<String>());
                         continue;
                     }
                     let pose = match parse_frame(&text) {
@@ -210,9 +297,28 @@ async fn session(mut socket: WebSocket, live: Live) {
                         }
                     }
                 }
-                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                Some(Ok(Message::Binary(still))) => {
+                    if still.len() <= STILL_MAX && still.starts_with(&[0xFF, 0xD8]) {
+                        let n = *live.stills.asked.borrow();
+                        live.stills.latest.send_replace(Some((n, still)));
+                    }
+                }
+                Some(Ok(Message::Close(c))) => {
+                    debug!("camera page closed the socket: {c:?}");
+                    break;
+                }
+                Some(Err(e)) => {
+                    debug!("camera page socket: {e}");
+                    break;
+                }
+                None => break,
                 Some(Ok(_)) => {}
             },
+            Ok(()) = asked.changed() => {
+                if !send(&mut socket, &Reply::Still).await {
+                    break;
+                }
+            }
             _ = tick.tick() => {
                 let f = framing(window.make_contiguous());
                 if let Some(b) = &live.broadcast {
@@ -224,7 +330,10 @@ async fn session(mut socket: WebSocket, live: Live) {
             }
         }
     }
-    if let Some(t) = &tx {
+    // A newer page already said the camera is connected.
+    if let Some(t) = &tx
+        && !replaced()
+    {
         let _ = t.send(link(false)).await;
     }
     info!("camera page disconnected ({dropped} frames dropped, {bad} malformed)");

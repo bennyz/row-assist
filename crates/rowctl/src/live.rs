@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use analysis::cues::{FocusCoach, Pacer};
+use analysis::cues::{FocusCoach, Pacer, Targets};
 use analysis::strokes::{StrokeAssembler, StrokeRecord};
 use analysis::technique::{Fault, LiveTechnique};
 use analysis::zones::HeartProfile;
@@ -119,6 +119,127 @@ impl LiveArgs {
     fn camera_on(&self) -> bool {
         self.camera || self.phone || self.sim_camera || self.sim_fault.is_some()
     }
+
+    fn setup(&self, focus: Option<Fault>) -> Setup {
+        Setup {
+            plan: self.plan,
+            rate: self.rate,
+            watts: self.watts,
+            zone: self.zone,
+            minutes: self.minutes,
+            focus,
+        }
+    }
+
+    fn devices(&self) -> Devices {
+        Devices {
+            sim: self.sim.then(|| sim::SimConfig {
+                pose: (self.sim_camera || self.sim_fault.is_some()).then(|| devices::sim_pose::PoseSim {
+                    fault: self.sim_fault.map(Into::into),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            pm5: !self.no_pm5,
+            h10: (!self.no_h10).then(|| self.h10_name.clone()),
+        }
+    }
+}
+
+/// Which devices to run.
+pub struct Devices {
+    /// The simulator instead of hardware.
+    pub sim: Option<sim::SimConfig>,
+    pub pm5: bool,
+    /// The heart-rate strap whose name contains this.
+    pub h10: Option<String>,
+}
+
+/// Start the devices sending events on `tx`. They stop when its receiver is
+/// dropped; the PM5 runs on its own thread (hidapi blocks).
+pub fn spawn_devices(d: Devices, clock: Clock, tx: &mpsc::Sender<Event>) -> Vec<tokio::task::JoinHandle<()>> {
+    let mut tasks = Vec::new();
+    if let Some(cfg) = d.sim {
+        tasks.push(tokio::spawn(sim::run(clock, tx.clone(), cfg)));
+        return tasks;
+    }
+    if d.pm5 {
+        let tx = tx.clone();
+        std::thread::spawn(move || pm5::run_blocking(clock, tx, pm5::Pm5Config::default()));
+    }
+    if let Some(name) = d.h10 {
+        let cfg = h10::H10Config {
+            name_contains: name,
+            ..Default::default()
+        };
+        tasks.push(tokio::spawn(h10::run(clock, tx.clone(), cfg)));
+    }
+    tasks
+}
+
+/// Heart rate from one source: the strap's own connection when this machine
+/// has it (with beat-to-beat intervals), else the PM5's relay of a strap
+/// paired to it (bpm only). Both at once would count every beat twice.
+#[derive(Debug, Default)]
+pub struct HeartPick {
+    direct: bool,
+}
+
+impl HeartPick {
+    /// Whether to use `ev`.
+    pub fn keep(&mut self, ev: &Event) -> bool {
+        match &ev.kind {
+            EventKind::Link(l) if l.device == Device::H10 => {
+                self.direct = l.connected;
+                true
+            }
+            EventKind::Heart(h) if h.via_pm5 => !self.direct,
+            _ => true,
+        }
+    }
+}
+
+/// What one row is set up as: a preset and its targets (flags override the
+/// preset's), and the technique focus.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Setup {
+    pub plan: Option<Plan>,
+    pub rate: Option<(f64, f64)>,
+    pub watts: Option<(f64, f64)>,
+    pub zone: Option<u8>,
+    pub minutes: Option<f64>,
+    pub focus: Option<Fault>,
+}
+
+impl Setup {
+    /// The pacing targets; `None` from `zone` without a heart profile.
+    pub fn targets(&self, heart: Option<&HeartProfile>) -> (Targets, bool) {
+        let mut targets = self.plan.map(|p| p.targets(heart)).unwrap_or_default();
+        targets.rate = self.rate.or(targets.rate);
+        targets.watts = self.watts.or(targets.watts);
+        targets.minutes = self.minutes.or(targets.minutes);
+        let mut zone_ok = true;
+        if let Some(z) = self.zone {
+            match heart.and_then(|h| h.zone_bpm(z)) {
+                Some((_, top)) => targets.hr_max = Some(top),
+                None => zone_ok = false,
+            }
+        }
+        (targets, zone_ok)
+    }
+}
+
+/// Speech for cues, or `None` (and a note why) when there's no program.
+pub fn start_speaker() -> Option<Speaker> {
+    let s = Speaker::start();
+    match &s {
+        Some(s) => println!("Speaking cues with {}", s.program),
+        None => eprintln!(
+            "No speech program found (looked for {}); cues will only be shown",
+            Speaker::candidates().join(", ")
+        ),
+    }
+    s
 }
 
 
@@ -142,56 +263,38 @@ async fn choose_focus(args: &LiveArgs, ctx: Option<&Ctx>) -> Option<Fault> {
     Some(chosen)
 }
 
-/// Everything the live loop needs besides the devices.
-struct Coach {
-    heart: Option<HeartProfile>,
+/// Everything the live loop needs besides the devices: one per row.
+pub struct Coach {
+    pub heart: Option<HeartProfile>,
     drag_target: Option<u8>,
     pacer: Option<Pacer>,
     technique: LiveTechnique,
     focus: Option<FocusCoach>,
     speaker: Option<Speaker>,
     /// Screens following the session (the mirror), when serving.
-    screens: Option<LiveSender>,
+    pub screens: Option<LiveSender>,
+    /// Cues given since the recorder last took them.
+    said: Vec<String>,
 }
 
 impl Coach {
-    fn new(args: &LiveArgs, ctx: Option<&Ctx>, focus: Option<Fault>) -> Self {
+    pub fn new(setup: &Setup, ctx: Option<&Ctx>, speaker: Option<Speaker>) -> Self {
         let heart = ctx.and_then(|c| c.heart()).map(|h| h.0);
-        let mut targets = args.plan.map(|p| p.targets(heart.as_ref())).unwrap_or_default();
-        if let Some(p) = args.plan {
+        if let Some(p) = setup.plan {
             println!("{}", p.describe());
         }
-        targets.rate = args.rate.or(targets.rate);
-        targets.watts = args.watts.or(targets.watts);
-        targets.minutes = args.minutes.or(targets.minutes);
-        if let Some(z) = args.zone {
-            match heart.as_ref().and_then(|h| h.zone_bpm(z)) {
-                Some((_, top)) => targets.hr_max = Some(top),
-                None => eprintln!("--zone needs a heart profile (see rowctl profile); ignoring it"),
-            }
+        let (targets, zone_ok) = setup.targets(heart.as_ref());
+        if !zone_ok {
+            eprintln!("--zone needs a heart profile (see rowctl profile); ignoring it");
         }
         if let Some(c) = ctx {
             println!("Zones from {}", c.heart_note());
         }
-
-        let speaker = if args.speak {
-            let s = Speaker::start();
-            match &s {
-                Some(s) => println!("Speaking cues with {}", s.program),
-                None => eprintln!(
-                    "--speak: no speech program found (looked for {}); cues will only be printed",
-                    Speaker::candidates().join(", ")
-                ),
-            }
-            s
-        } else {
-            None
-        };
         let pacer = (!targets.is_empty()).then(|| {
             println!("Cues: {}", describe_targets(&targets));
             Pacer::new(targets)
         });
-        if let Some(f) = focus {
+        if let Some(f) = setup.focus {
             println!("Focus: {} (\"{}\")", f.label(), f.cue());
         }
         Self {
@@ -199,13 +302,14 @@ impl Coach {
             drag_target: ctx.and_then(|c| c.profile.drag_target),
             pacer,
             technique: LiveTechnique::new(),
-            focus: focus.map(FocusCoach::new),
+            focus: setup.focus.map(FocusCoach::new),
             speaker,
             screens: None,
+            said: Vec::new(),
         }
     }
 
-    fn cue(&self, text: &str) {
+    fn cue(&mut self, text: &str) {
         println!("  » {text}");
         if let Some(s) = &self.speaker {
             s.say(text);
@@ -213,10 +317,23 @@ impl Coach {
         if let Some(hub) = &self.screens {
             live::publish(hub, &LiveMsg::Cue { text });
         }
+        self.said.push(text.to_owned());
+    }
+
+    /// The cues given since the last call, as events at `t_us` for the
+    /// recording: a review can then see what each one did.
+    pub fn take_said(&mut self, t_us: i64) -> Vec<Event> {
+        self.said
+            .drain(..)
+            .map(|text| Event {
+                t_us,
+                kind: EventKind::Cue { text },
+            })
+            .collect()
     }
 
     /// A camera frame: buffer it, and show it on the screens.
-    fn pose(&mut self, p: &model::Pose) {
+    pub fn pose(&mut self, p: &model::Pose) {
         self.technique.frame(p);
         if let Some(hub) = &self.screens
             && let Some(joints) = self.technique.figure(p)
@@ -225,7 +342,7 @@ impl Coach {
         }
     }
 
-    fn publish_stroke(&self, r: &StrokeRecord) {
+    pub fn publish_stroke(&self, r: &StrokeRecord) {
         let Some(hub) = &self.screens else { return };
         let (typical_catch, typical_finish) = self.technique.typical();
         let pose = r.pose.as_ref();
@@ -248,7 +365,7 @@ impl Coach {
         );
     }
 
-    fn publish_focus(&self) {
+    pub fn publish_focus(&self) {
         if let Some(hub) = &self.screens {
             let fault = self.focus.as_ref().map(|f| f.focus());
             live::publish(hub, &LiveMsg::Focus { fault, cue: fault.map(|f| f.cue()) });
@@ -256,12 +373,12 @@ impl Coach {
     }
 
     /// Give a completed stroke its camera view and faults.
-    fn observe(&mut self, r: &mut StrokeRecord) {
+    pub fn observe(&mut self, r: &mut StrokeRecord) {
         self.technique.stroke(r);
     }
 
     /// React to a completed (observed) stroke.
-    fn react(&mut self, r: &StrokeRecord, count: u32) {
+    pub fn react(&mut self, r: &StrokeRecord, count: u32) {
         if count == DRAG_CHECK_STROKE
             && let Some(df) = r.drag_factor
         {
@@ -352,10 +469,11 @@ pub async fn record(args: LiveArgs, out: Option<PathBuf>, note: Option<String>) 
     header.note = note;
     header.simulated = args.sim;
     header.plan = args.plan.map(|p| p.name().to_owned());
-    let writer = FileWriter::create(&path, &header)?;
     print_readiness(ctx.as_ref()).await;
     let focus = choose_focus(&args, ctx.as_ref()).await;
-    let coach = Coach::new(&args, ctx.as_ref(), focus);
+    header.focus = focus.map(|f| f.label().to_owned());
+    let writer = FileWriter::create(&path, &header)?;
+    let coach = Coach::new(&args.setup(focus), ctx.as_ref(), args.speak.then(start_speaker).flatten());
     println!("Recording to {} (Ctrl-C to stop)", path.display());
 
     let pool = ctx.as_ref().map(|c| c.pool.clone());
@@ -378,7 +496,7 @@ pub async fn record(args: LiveArgs, out: Option<PathBuf>, note: Option<String>) 
 pub async fn watch(args: LiveArgs) -> Result<()> {
     let ctx = open_ctx(&args).await;
     let focus = choose_focus(&args, ctx.as_ref()).await;
-    let coach = Coach::new(&args, ctx.as_ref(), focus);
+    let coach = Coach::new(&args.setup(focus), ctx.as_ref(), args.speak.then(start_speaker).flatten());
     let pool = ctx.as_ref().map(|c| c.pool.clone());
     run(&args, Clock::start(), None, coach, pool).await.map(|_| ())
 }
@@ -392,42 +510,15 @@ async fn run(
     pool: Option<store::SqlitePool>,
 ) -> Result<(Option<FileWriter>, u32)> {
     let (tx, mut rx) = mpsc::channel::<Event>(4096);
-    let mut tasks = Vec::new();
-    if args.sim {
-        let cfg = sim::SimConfig {
-            pose: (args.sim_camera || args.sim_fault.is_some()).then(|| devices::sim_pose::PoseSim {
-                fault: args.sim_fault.map(Into::into),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        tasks.push(tokio::spawn(sim::run(clock, tx.clone(), cfg)));
-    } else {
-        if !args.no_pm5 {
-            let tx = tx.clone();
-            // hidapi is blocking: give the PM5 its own thread. It exits when
-            // the channel closes.
-            std::thread::spawn(move || pm5::run_blocking(clock, tx, pm5::Pm5Config::default()));
-        }
-        if !args.no_h10 {
-            let cfg = h10::H10Config {
-                name_contains: args.h10_name.clone(),
-                ..Default::default()
-            };
-            tasks.push(tokio::spawn(h10::run(clock, tx.clone(), cfg)));
-        }
-    }
+    let tasks = spawn_devices(args.devices(), clock, &tx);
     // The camera page's frames join the same stream as the devices'; the
     // mirror follows the session on /ws/live.
     let mut servers = Vec::new();
     if args.camera || args.phone {
         let hub = live::channel();
         let session = server::Live::into_session(clock, tx.clone()).with_broadcast(hub.clone());
-        let api = pool.map(|pool| server::Api {
-            pool,
-            token: store::health::token(&store::paths::token_path()).ok(),
-        });
-        if let Some(tasks) = crate::screens::start(args.listen, args.phone, session, api).await {
+        let api = pool.map(|pool| server::Api::new(pool, store::health::token(&store::paths::token_path()).ok()));
+        if let Some(tasks) = crate::screens::start(args.listen, args.phone, session, api, &crate::default_web_dir()).await {
             coach.screens = Some(hub);
             servers = tasks;
         }
@@ -443,6 +534,7 @@ async fn run(
         ..Default::default()
     };
     let mut asm = StrokeAssembler::new();
+    let mut hearts = HeartPick::default();
     let mut ticker = tokio::time::interval(STATUS_EVERY);
     ticker.tick().await;
     let ctrl_c = tokio::signal::ctrl_c();
@@ -460,6 +552,9 @@ async fn run(
         tokio::select! {
             ev = rx.recv() => {
                 let Some(ev) = ev else { break };
+                if !hearts.keep(&ev) {
+                    continue;
+                }
                 if let Some(w) = writer.as_mut() {
                     w.write(&ev)?;
                 }
@@ -475,6 +570,11 @@ async fn run(
                     println!("{}", record_line(&r, start_us, view.heart.as_ref()));
                     coach.publish_stroke(&r);
                     coach.react(&r, view.strokes);
+                    for cue in coach.take_said(ev.t_us) {
+                        if let Some(w) = writer.as_mut() {
+                            w.write(&cue)?;
+                        }
+                    }
                 }
             }
             _ = ticker.tick() => {
@@ -499,8 +599,8 @@ async fn run(
 }
 
 #[derive(Default)]
-struct View {
-    heart: Option<HeartProfile>,
+pub struct View {
+    pub heart: Option<HeartProfile>,
     pm5: Option<Pm5Status>,
     pm5_link: Option<bool>,
     h10_link: Option<bool>,
@@ -514,7 +614,7 @@ struct View {
 
 impl View {
     /// Track the latest values. Returns a message when a device's link changes.
-    fn apply(&mut self, ev: &Event) -> Option<String> {
+    pub fn apply(&mut self, ev: &Event) -> Option<String> {
         self.events += 1;
         match &ev.kind {
             EventKind::Pm5Status(s) => self.pm5 = Some(s.clone()),

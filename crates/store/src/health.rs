@@ -8,15 +8,52 @@ use analysis::readiness::HealthDay;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use sqlx::{Row, SqlitePool};
 
 /// What the Shortcut sends. Every list is optional.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Samples {
+    #[serde(deserialize_with = "lenient_list")]
     pub hrv: Vec<Sample>,
+    #[serde(deserialize_with = "lenient_list")]
     pub resting_hr: Vec<Sample>,
+    #[serde(deserialize_with = "lenient_list")]
     pub sleep: Vec<SleepSample>,
+}
+
+/// A list, or what Shortcuts makes of a list of dictionaries put into a
+/// dictionary: one text with each item's JSON on a line of its own (or a
+/// JSON array as text). A single item may come without the list.
+fn lenient_list<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    use serde::de::Error;
+    use serde_json::Value;
+    let items = match Value::deserialize(d)? {
+        Value::Array(items) => items,
+        Value::Null => vec![],
+        item @ Value::Object(_) => vec![item],
+        Value::String(text) if text.trim_start().starts_with('[') => {
+            serde_json::from_str(&text).map_err(|e| D::Error::custom(format!("a list as text that isn't JSON: {e}")))?
+        }
+        Value::String(text) => text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                serde_json::from_str(line).map_err(|e| D::Error::custom(format!("a line that isn't a sample: {e}")))
+            })
+            .collect::<Result<_, _>>()?,
+        _ => return Err(D::Error::custom("expected a list of samples")),
+    };
+    items
+        .into_iter()
+        .map(|item| serde_json::from_value(item).map_err(D::Error::custom))
+        .collect()
 }
 
 #[derive(Debug, Deserialize)]
@@ -249,6 +286,30 @@ mod tests {
         let oct31 = days.iter().find(|d| d.day == nov1 - 1).unwrap();
         assert_eq!((oct31.hrv_ms, oct31.sleep_h), (Some(40.0), None));
         assert!(aggregate(&serde_json::from_str(r#"{"hrv": [{"date": "yesterday", "value": 1}]}"#).unwrap()).is_err());
+    }
+
+    /// A list variable of dictionaries, put into the request's dictionary,
+    /// reaches us as text: one item's JSON per line, values as text.
+    #[test]
+    fn lists_sent_as_text_one_item_per_line_are_read() {
+        let lines = |items: &[&str]| serde_json::Value::String(items.join("\n"));
+        let post = serde_json::json!({
+            "hrv": lines(&[
+                r#"{"value":"50.0","date":"2026-11-01T03:12:00+02:00"}"#,
+                r#"{"value":"60.0","date":"2026-11-01T14:00:00+02:00"}"#,
+            ]),
+            "resting_hr": r#"[{"value": "56", "date": "2026-11-01"}]"#,
+            "sleep": {"start": "2026-10-31T23:30:00+02:00", "end": "2026-11-01T06:30:00+02:00", "value": "Core"},
+        });
+        let s: Samples = serde_json::from_value(post).unwrap();
+        let days = aggregate(&s).unwrap();
+        let nov1 = day_number(NaiveDate::from_ymd_opt(2026, 11, 1).unwrap());
+        let d = days.iter().find(|d| d.day == nov1).unwrap();
+        assert_eq!((d.hrv_ms, d.resting_hr, d.sleep_h), (Some(55.0), Some(56.0), Some(7.0)));
+
+        let bad = serde_json::json!({"hrv": "not a sample"});
+        let e = serde_json::from_value::<Samples>(bad).unwrap_err().to_string();
+        assert!(e.contains("a line that isn't a sample"), "{e}");
     }
 
     #[tokio::test]

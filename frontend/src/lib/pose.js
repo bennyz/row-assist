@@ -19,18 +19,34 @@ export const BONES = [
 ];
 export const VISIBLE = 0.5;
 
-/** The landmarker, on the GPU when the browser allows it. */
-export async function createLandmarker() {
+// A GPU set-up that never finishes mustn't stall the page: the CPU is slower
+// but works everywhere.
+const GPU_TIMEOUT_MS = 20000;
+
+/** The landmarker, on the GPU when the browser allows it. `step` hears each stage. */
+export async function createLandmarker(step = () => {}) {
+  step('loading the pose runtime');
   const fileset = await FilesetResolver.forVisionTasks('/mediapipe/wasm');
   const options = (delegate) => ({
     baseOptions: { modelAssetPath: '/mediapipe/pose_landmarker_full.task', delegate },
     runningMode: 'VIDEO',
     numPoses: 1,
   });
+  step('starting the pose model on the GPU');
+  const gpu = PoseLandmarker.createFromOptions(fileset, options('GPU'));
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`no answer in ${GPU_TIMEOUT_MS / 1000} s`)), GPU_TIMEOUT_MS);
+  });
   try {
-    return { landmarker: await PoseLandmarker.createFromOptions(fileset, options('GPU')), delegate: 'GPU' };
+    const landmarker = await Promise.race([gpu, timeout]);
+    clearTimeout(timer);
+    return { landmarker, delegate: 'GPU' };
   } catch (e) {
-    console.warn('Pose on GPU failed, using CPU:', e);
+    clearTimeout(timer);
+    // One that turns up late isn't used.
+    gpu.then((l) => l.close(), () => {});
+    step(`the GPU failed (${e?.message ?? e}); starting on the CPU`);
     return { landmarker: await PoseLandmarker.createFromOptions(fileset, options('CPU')), delegate: 'CPU' };
   }
 }

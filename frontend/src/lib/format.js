@@ -1,5 +1,26 @@
 export const DASH = '–';
 
+/** The planner's kinds of row. */
+export const KINDS = {
+  reference: 'Reference row',
+  easy: 'Easy row',
+  steady: 'Steady row',
+  rate_steps: 'Rate steps',
+  rate20_test: 'Rate-20 test',
+  minimum: 'Minimum session',
+};
+
+/** Readiness levels: a mark and a word, never colour alone. */
+export const READINESS = {
+  green: { mark: '✓', label: 'Ready', tone: 'ok', advice: 'Row as planned.' },
+  amber: { mark: '▲', label: 'Go easy', tone: 'warn', advice: 'Easy only: no intensity today.' },
+  red: { mark: '■', label: 'Recover', tone: 'bad', advice: 'Minimum session: 15–20 min easy, or rest.' },
+  unknown: { mark: '?', label: 'No baseline yet', tone: 'muted', advice: 'Needs two weeks of Watch data.' },
+};
+
+/** "20 min" or "20–25 min" from the planner's (low, high). */
+export const minutesLabel = ([lo, hi]) => (lo === hi ? `${lo} min` : `${lo}–${hi} min`);
+
 const missing = (v) => v == null || Number.isNaN(v);
 
 export function fixed(v, digits = 0) {

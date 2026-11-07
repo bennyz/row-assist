@@ -8,14 +8,18 @@
 //!
 //! Polling alternates two frames, each carrying the stroke state, so stroke
 //! timing is sampled at the full poll rate:
-//! - status: cadence, power, drag factor, distance, time, workout state
+//! - status: cadence, power, heart rate, drag factor, distance, time, workout
+//!   state
 //! - force: up to 16 force-curve points drained from the PM's buffer
+//!
+//! A strap paired to the PM5 reaches us through it: its heart rate is passed
+//! on once a second as a [`Heart`] marked `via_pm5` (bpm only, no intervals).
 
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use hidapi::{HidApi, HidDevice};
-use model::{Clock, Device, Event, EventKind, Link, Pm5Force, Pm5Status, StrokeState};
+use model::{Clock, Device, Event, EventKind, Heart, Link, Pm5Force, Pm5Status, StrokeState};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -35,6 +39,8 @@ const MAX_READS: usize = 4;
 const MAX_MISSES: u32 = 200;
 /// Force-plot bytes requested per poll: 32 bytes = 16 points.
 const FORCE_BLOCK: u8 = 32;
+/// A strap sends about one beat a second; more often only repeats it.
+const HEART_EVERY: Duration = Duration::from_secs(1);
 
 pub struct Pm5 {
     dev: HidDevice,
@@ -146,6 +152,7 @@ pub fn status_cmds() -> Vec<Cmd> {
     vec![
         Cmd::Std(std_cmd::GET_CADENCE),
         Cmd::Std(std_cmd::GET_POWER),
+        Cmd::Std(std_cmd::GET_HR_CUR),
         Cmd::pm(pm_cmd::GET_STROKE_STATE),
         Cmd::pm(pm_cmd::GET_DRAG_FACTOR),
         Cmd::pm(pm_cmd::GET_WORK_DISTANCE),
@@ -179,6 +186,15 @@ pub fn decode_status(r: &Response) -> Pm5Status {
         drag_factor: r.pm(pm_cmd::GET_DRAG_FACTOR).and_then(|d| d.first().copied()),
         workout_state: r.pm(pm_cmd::GET_WORKOUT_STATE).and_then(|d| d.first().copied()),
     }
+}
+
+/// The heart rate of a strap paired to the PM5; `None` without one (it
+/// reads 0).
+pub fn decode_heart(r: &Response) -> Option<u16> {
+    r.std(std_cmd::GET_HR_CUR)
+        .and_then(|d| d.first().copied())
+        .filter(|&bpm| bpm > 0)
+        .map(u16::from)
 }
 
 /// Force reply layout: `bytes_read, data[32]`; points are `bytes_read / 2` u16s.
@@ -247,6 +263,7 @@ pub fn run_blocking(clock: Clock, tx: mpsc::Sender<Event>, cfg: Pm5Config) {
 fn poll_loop(pm5: &Pm5, clock: &Clock, tx: &mpsc::Sender<Event>, cfg: &Pm5Config) -> Result<()> {
     let frames = [status_cmds(), force_cmds()];
     let mut misses = 0u32;
+    let mut heart_sent: Option<Instant> = None;
     loop {
         for (i, cmds) in frames.iter().enumerate() {
             let started = Instant::now();
@@ -266,6 +283,20 @@ fn poll_loop(pm5: &Pm5, clock: &Clock, tx: &mpsc::Sender<Event>, cfg: &Pm5Config
                         && tx.blocking_send(Event { t_us, kind }).is_err()
                     {
                         return Ok(());
+                    }
+                    if i == 0
+                        && let Some(bpm) = decode_heart(&r)
+                        && heart_sent.is_none_or(|t| t.elapsed() >= HEART_EVERY)
+                    {
+                        heart_sent = Some(Instant::now());
+                        let kind = EventKind::Heart(Heart {
+                            bpm,
+                            via_pm5: true,
+                            ..Default::default()
+                        });
+                        if tx.blocking_send(Event { t_us, kind }).is_err() {
+                            return Ok(());
+                        }
                     }
                 }
                 None => {
@@ -413,7 +444,7 @@ mod tests {
     fn status_frame_bytes() {
         assert_eq!(
             payload(&status_cmds()),
-            vec![0xA7, 0xB4, 0x1A, 0x05, 0xBF, 0xC1, 0xA3, 0xA0, 0x8D],
+            vec![0xA7, 0xB4, 0xB0, 0x1A, 0x05, 0xBF, 0xC1, 0xA3, 0xA0, 0x8D],
         );
     }
 
@@ -460,7 +491,7 @@ mod tests {
     fn decodes_status_reply() {
         let p = reply(
             0x05,
-            &[(0xA7, &[20, 0, 0x53]), (0xB4, &[84, 0, 0x58])],
+            &[(0xA7, &[20, 0, 0x53]), (0xB4, &[84, 0, 0x58]), (0xB0, &[0x54])],
             &[
                 (0xBF, &[2]),
                 (0xC1, &[112]),
@@ -483,6 +514,14 @@ mod tests {
                 workout_state: Some(1),
             }
         );
+        // As a real PM5 answered with a strap paired to it.
+        assert_eq!(decode_heart(&r), Some(84));
+    }
+
+    #[test]
+    fn no_strap_on_the_pm5_is_no_heart_rate() {
+        let r = parse_response(&reply(0x05, &[(0xB0, &[0])], &[])).unwrap();
+        assert_eq!(decode_heart(&r), None);
     }
 
     #[test]
@@ -501,5 +540,6 @@ mod tests {
         let r = parse_response(&[0x05]).unwrap();
         assert_eq!(decode_status(&r), Pm5Status::default());
         assert!(decode_force(&r).is_none());
+        assert!(decode_heart(&r).is_none());
     }
 }

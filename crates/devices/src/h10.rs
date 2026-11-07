@@ -47,7 +47,12 @@ pub fn parse_hr_measurement(d: &[u8]) -> Option<Heart> {
             i += 2;
         }
     }
-    Some(Heart { bpm, rr_1024, contact })
+    Some(Heart {
+        bpm,
+        rr_1024,
+        contact,
+        ..Default::default()
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -78,18 +83,34 @@ enum End {
 /// Stream heart rate until `tx` is closed, reconnecting when the strap drops.
 /// Disconnects cleanly on the way out so the strap is free for other devices.
 pub async fn run(clock: Clock, tx: mpsc::Sender<Event>, cfg: H10Config) {
-    let adapter = match first_adapter().await {
-        Ok(a) => a,
-        Err(e) => {
-            info!("H10 disabled: {e:#}");
-            send_link(&tx, &clock, false, Some(format!("{e:#}"))).await;
-            return;
-        }
-    };
     // Retries every few seconds; only log when the reason changes.
     let mut last_err: Option<String> = None;
+    let mut adapter: Option<Adapter> = None;
     loop {
-        match session(&adapter, &clock, &tx, &cfg).await {
+        // No adapter yet (a server started at login can beat Bluetooth up):
+        // keep looking rather than give up for good.
+        if adapter.is_none() {
+            match first_adapter().await {
+                Ok(a) => adapter = Some(a),
+                Err(e) => {
+                    let msg = format!("{e:#}");
+                    if last_err.as_ref() != Some(&msg) {
+                        info!("H10: {msg}");
+                    }
+                    last_err = Some(msg.clone());
+                    if !send_link(&tx, &clock, false, Some(msg)).await {
+                        return;
+                    }
+                    tokio::select! {
+                        _ = tx.closed() => return,
+                        _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+                    }
+                    continue;
+                }
+            }
+        }
+        let Some(a) = adapter.as_ref() else { continue };
+        match session(a, &clock, &tx, &cfg).await {
             Ok(End::Stop) => return,
             Ok(End::Lost) => {
                 last_err = None;
@@ -106,6 +127,9 @@ pub async fn run(clock: Clock, tx: mpsc::Sender<Event>, cfg: H10Config) {
                 if !send_link(&tx, &clock, false, Some(msg)).await {
                     return;
                 }
+                // A handle taken while Bluetooth was off never scans, even
+                // once it's on: start the next try with a fresh one.
+                adapter = None;
             }
         }
         tokio::select! {

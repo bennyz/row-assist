@@ -477,8 +477,8 @@ mod tests {
             t_us: t_ms * 1000,
             kind: EventKind::Heart(model::Heart {
                 bpm,
-                rr_1024: vec![],
                 contact: Some(true),
+                ..Default::default()
             }),
         }
     }

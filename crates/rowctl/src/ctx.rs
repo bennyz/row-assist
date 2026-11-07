@@ -29,17 +29,25 @@ impl Ctx {
     pub async fn open(db: Option<PathBuf>) -> Result<Self> {
         let db_path = db.unwrap_or_else(store::paths::db_path);
         let pool = store::db::open(&db_path).await?;
-        let profile = store::sessions::get_profile(&pool).await?;
-        let age = store::sessions::latest_age(&pool).await?;
-        let recent = store::health::list_days(&pool, today() - 30).await?;
-        let watch_rest = analysis::readiness::zone_rest(&recent, today());
-        Ok(Self {
+        let mut ctx = Self {
             db_path,
             pool,
-            profile,
-            age,
-            watch_rest,
-        })
+            profile: Profile::default(),
+            age: None,
+            watch_rest: None,
+        };
+        ctx.refresh().await?;
+        Ok(ctx)
+    }
+
+    /// Reload what can change while `rowctl serve` runs: the profile, and the
+    /// Watch's resting heart rate.
+    pub async fn refresh(&mut self) -> Result<()> {
+        self.profile = store::sessions::get_profile(&self.pool).await?;
+        self.age = store::sessions::latest_age(&self.pool).await?;
+        let recent = store::health::list_days(&self.pool, today() - 30).await?;
+        self.watch_rest = analysis::readiness::zone_rest(&recent, today());
+        Ok(())
     }
 
     /// Heart profile with estimates filling what isn't set.

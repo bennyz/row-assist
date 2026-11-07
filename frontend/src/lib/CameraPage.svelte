@@ -42,6 +42,22 @@
   const clock = new ClockSync();
   let pingTimer;
   let wake = null;
+  let fpsReports = 0;
+
+  // Progress and problems go to Row Assist as well, into its log on the
+  // computer: a phone has no console to look at.
+  const notes = [];
+  function note(text) {
+    notes.push(String(text).slice(0, 300));
+    notes.splice(0, notes.length - 20);
+    while (ws?.readyState === WebSocket.OPEN && notes.length) ws.send(JSON.stringify({ note: notes.shift() }));
+  }
+  $effect(() => {
+    if (stage) note(stage);
+  });
+  $effect(() => {
+    if (problem) note(`problem: ${problem}`);
+  });
 
   onMount(async () => {
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
@@ -50,13 +66,16 @@
       return;
     }
     document.addEventListener('visibilitychange', onVisible);
+    // Connected first, so the computer hears how loading goes.
+    connect();
+    note(`opened: ${navigator.userAgent}`);
     try {
-      ({ landmarker, delegate } = await createLandmarker());
+      ({ landmarker, delegate } = await createLandmarker(note));
     } catch (e) {
       problem = `The pose model didn't load: ${e.message ?? e}. Was the frontend built (npm run build)?`;
       return;
     }
-    connect();
+    note(`pose model running on the ${delegate}`);
     await openCamera();
   });
 
@@ -126,6 +145,7 @@
     await video.play();
     res = `${video.videoWidth}×${video.videoHeight}`;
     stage = null;
+    note(`camera open: ${res}`);
     keepAwake();
     schedule();
   }
@@ -150,6 +170,7 @@
       let n = 0;
       const tick = () => {
         if (ws?.readyState !== WebSocket.OPEN) return;
+        if (n === 0) note('connected');
         ws.send(clock.ping());
         n += 1;
         pingTimer = setTimeout(tick, n < 5 ? 150 : 5000);
@@ -166,6 +187,8 @@
         recording = m.recording;
       } else if (m.type === 'framing') {
         framing = m;
+      } else if (m.type === 'still') {
+        sendStill();
       } else if (m.type === 'error') {
         link = 'refused';
         problem = m.message;
@@ -176,6 +199,21 @@
       if (link !== 'refused') link = 'closed';
       if (alive && link !== 'refused') setTimeout(connect, 2000);
     };
+  }
+
+  // Asked for by the computer's row screen while setting up: one small
+  // picture of what the camera sees, with the detected body drawn on. It's
+  // shown there and not kept.
+  function sendStill() {
+    if (!video?.videoWidth || ws?.readyState !== WebSocket.OPEN) return;
+    const scale = 640 / Math.max(video.videoWidth, video.videoHeight);
+    const c = document.createElement('canvas');
+    c.width = Math.round(video.videoWidth * scale);
+    c.height = Math.round(video.videoHeight * scale);
+    const g = c.getContext('2d');
+    g.drawImage(video, 0, 0, c.width, c.height);
+    g.drawImage(canvas, 0, 0, c.width, c.height);
+    c.toBlob((b) => b && ws?.readyState === WebSocket.OPEN && ws.send(b), 'image/jpeg', 0.7);
   }
 
   function schedule() {
@@ -210,6 +248,7 @@
       fps = (frames * 1000) / (ts - fpsFrom);
       frames = 0;
       fpsFrom = ts;
+      if (++fpsReports === 5) note(`pose ${fps.toFixed(0)} fps on the ${delegate}, screen ${awake ? 'kept on' : 'may lock'}`);
     }
     schedule();
   }
@@ -260,7 +299,7 @@
       connecting: 'Connecting to Row Assist…',
       open: recording ? 'Recording with the session' : 'Setup only: not recording',
       closed: 'Lost the connection to Row Assist; retrying',
-      refused: 'Another camera page is connected',
+      refused: 'Stopped: the camera page is open somewhere else',
     }[link],
   );
 </script>
