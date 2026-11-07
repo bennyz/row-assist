@@ -225,7 +225,10 @@ whole body in view, side-on, size in frame, landmark clarity).
 
 - **Near side**: auto-detected from landmark visibility; only near-side joints are used.
 - **Free horizon**: the hip slides along a level rail, so the hip path across a stroke is a
-  horizontal line. Its slope gives camera tilt, corrected before computing angles.
+  horizontal line. Its slope gives camera tilt, corrected before computing angles. Only frames
+  from the first stroke to the last (± 2 s) count (`technique::rowing_frames`): climbing on and
+  off moves the hip in ways rowing doesn't: fitting every frame read a level camera as tilted by
+  several degrees, and turned every body angle with it.
 - **Scale**: distances are normalised by thigh length (hip–knee) so camera distance doesn't matter.
 - Angles: trunk = hip→shoulder vs vertical (+ toward the feet); shin = ankle→knee vs vertical
   (+ knee toward the hips); knee = hip–knee–ankle; hip = shoulder–hip–knee; elbow =
@@ -257,8 +260,11 @@ Thresholds start from common coaching norms and are tuned against recorded sessi
 **Built (`analysis::technique`):** 1 = shin > 12° from vertical at the camera catch; 2 = trunk
 tips forward > 6° past its catch angle in the first third of the drive (if the hips leave and
 the handle doesn't, the trunk must tip: cleaner than comparing hip and wrist travel); 3 = elbow
-< 160° while the knee is still < 150°; 4 = recovery/drive < 1.5 at ≤ 24 spm (PM5 only, no
-camera needed). Each is tested against the simulator's kinematic rower
+< 160° while the knee is still < 150°; 4 = recovery/drive < 1.5 at ≤ 24 spm, by the camera's
+handle timing when there is one, else the PM5's (`technique::handle_timing`). The PM5's drive
+time only covers the flywheel speeding up, about half the handle's drive, so its ratio reads
+more than twice the real one. Session drive time and ratio, and the review's, use
+the camera's when it saw most strokes (`Summary::handle_timing`, analysis version 2). Each is tested against the simulator's kinematic rower
 (`rowctl simulate --fault early-arms` etc.): the injected fault is found on > 90% of strokes
 and nothing fires on clean rowing. Real deliberately-rowed fixtures are still to come.
 Every fault has a matching drill (legs-only, pick drill, pause at hands-away, rate ladder).
@@ -301,13 +307,26 @@ The front screen shows the rower's own position, drawn from landmarks (no video 
   no-feedback blocks to check the fix stuck. The planner schedules these.
 
 **Built:** the row screen (`/`, also `/mirror`), fed by `/ws/live` from `rowctl serve` (or
-`record --camera`). The live figure is anchored at the ankle so the
-body slides as it does on the erg; guides are a shin-vertical line and the catch (15–30° forward)
-and finish (5–30° back) body-angle wedges, sent by the server
-(`analysis::technique::{CATCH,FINISH}_TRUNK_GUIDE`). Beside it, the last stroke frozen at catch
-and finish over the median of the last 20 strokes; big rate, watts and HR + zone; the coach's
-cue as a banner; a "Numbers only" switch for the no-feedback blocks. Only figures travel, never
-video.
+`record --camera`), sized to fit one laptop screen read from the erg:
+- **Live figure** drawn from where the feet rest (the median ankle, `LiveTechnique::figure`),
+  so it holds still while the seat slides; framed to the rower's own range of movement.
+- **Target rower** behind it (`frontend/src/lib/ghost.js`): a good stroke drawn with the
+  rower's own proportions, measured from the live figures (thigh, shin, trunk, arm lengths,
+  seat and handle heights). Drive: legs, then the body swings from the catch lean to the finish
+  lean (the middles of `CATCH_TRUNK_GUIDE` and `FINISH_TRUNK_GUIDE`), then the arms; recovery:
+  arms, body, then a slow slide to shins vertical. It restarts at each of the rower's catches
+  (the wrist's furthest forward point, found in the live figure itself, so it shares the
+  figure's delay) and runs at the target rhythm (`cues::Rhythm`: a third of the stroke on the
+  drive, 0.8–1.1 s; 1 s + 2 s at rate 20). Ahead of it means rushing; past its own stroke it
+  waits at the catch.
+- **Rhythm bar**: the target drive and recovery with a marker for now, and the last stroke's,
+  by the camera; "Slow the slide" when the recovery is 0.25 s or more short.
+- **Numbers against targets** (`LiveMsg::Targets`, every second): rate, watts and heart rate,
+  each with its band and which way to go. Heart rate first: "harder" isn't shown while it's
+  over the ceiling.
+- Beside it, the last stroke frozen at catch and finish over the median of the last 20 strokes;
+  the coach's cue as a banner; a "Numbers only" switch for the no-feedback blocks. Only figures
+  travel, never video.
 
 **Validation:** each fault detector ships with a recorded session where the fault is rowed
 *on purpose* (e.g., 20 strokes bending the arms early). The detector must flag those strokes

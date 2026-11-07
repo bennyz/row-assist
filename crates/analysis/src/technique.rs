@@ -132,6 +132,16 @@ pub struct StrokePose {
     pub finish_figure: Figure,
 }
 
+/// How long the handle took, by the camera: `(drive, recovery)` in ms, from
+/// the camera catch (wrist furthest forward) to its finish (furthest back),
+/// and the rest of the stroke's cycle. The PM5's own drive time only covers
+/// the flywheel speeding up, about half the handle's drive.
+pub fn handle_timing(stroke: &StrokeRecord, pose: Option<&StrokePose>) -> Option<(f64, f64)> {
+    let drive = pose.map(|p| p.finish_ms - p.catch_ms).filter(|&d| d > 0.0)?;
+    let cycle = stroke.cycle_s()? * 1000.0;
+    (cycle > drive).then_some((drive, cycle - drive))
+}
+
 /// Pose frames from a recording, by capture time.
 pub fn pose_frames<'a>(events: impl IntoIterator<Item = &'a Event>) -> Vec<Pose> {
     let mut frames: Vec<Pose> = events
@@ -219,14 +229,54 @@ pub fn figure(f: &Pose, view: &CameraView) -> Figure {
     let Some(hip) = at(f, view, Joint::Hip) else {
         return Vec::new();
     };
+    figure_from(f, view, hip)
+}
+
+/// Where the feet rest, levelled: the median ankle. The feet don't move on
+/// the footplate, but the ankle is often the least certain point, at the
+/// bottom of the picture.
+fn feet(frames: &[Pose], view: &CameraView) -> Option<(f64, f64)> {
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    for (x, y) in frames.iter().filter_map(|f| at(f, view, Joint::Ankle)) {
+        xs.push(x);
+        ys.push(y);
+    }
+    if xs.len() < 10 {
+        return None;
+    }
+    xs.sort_by(f64::total_cmp);
+    ys.sort_by(f64::total_cmp);
+    Some((xs[xs.len() / 2], ys[ys.len() / 2]))
+}
+
+/// The frames from the first stroke on (with a margin), or all of them
+/// before there's a stroke: climbing on and off the erg moves the hip in
+/// ways rowing doesn't, which would read as a tilted camera.
+pub fn rowing_frames<'a>(strokes: &[StrokeRecord], frames: &'a [Pose]) -> &'a [Pose] {
+    let (Some(first), Some(last)) = (strokes.first(), strokes.last()) else {
+        return frames;
+    };
+    let end = last.t_next_catch_us.unwrap_or(last.t_catch_us) + ROWING_MARGIN_US;
+    let lo = first_at(frames, first.t_catch_us - ROWING_MARGIN_US);
+    let hi = first_at(frames, end).max(lo);
+    &frames[lo..hi]
+}
+
+/// Frames this long either side of the strokes count as rowing.
+const ROWING_MARGIN_US: i64 = 2_000_000;
+
+/// A frame's near-side body relative to `origin` (levelled pixels), in thigh
+/// lengths, x toward the feet, y up.
+fn figure_from(f: &Pose, view: &CameraView, origin: (f64, f64)) -> Figure {
     use Joint::*;
     [Ear, Shoulder, Elbow, Wrist, Hip, Knee, Ankle, Heel, Toe]
         .iter()
         .map(|&j| {
             at(f, view, j).map(|(x, y)| {
                 [
-                    ((x - hip.0) * view.facing / view.thigh_px) as f32,
-                    ((y - hip.1) / view.thigh_px) as f32,
+                    ((x - origin.0) * view.facing / view.thigh_px) as f32,
+                    ((y - origin.1) / view.thigh_px) as f32,
                 ]
             })
         })
@@ -297,7 +347,8 @@ pub fn faults(stroke: &StrokeRecord, pose: Option<&StrokePose>) -> Vec<FaultHit>
             hit(Fault::EarlyArms, elbow);
         }
     }
-    if let (Some(ratio), Some(rate)) = (stroke.ratio, stroke.rate())
+    let ratio = handle_timing(stroke, pose).map(|(drive, recovery)| recovery / drive).or(stroke.ratio);
+    if let (Some(ratio), Some(rate)) = (ratio, stroke.rate())
         && rate <= RUSHED_MAX_SPM
         && ratio < RUSHED_RATIO
     {
@@ -317,6 +368,10 @@ pub struct LiveTechnique {
     view: Option<CameraView>,
     /// Recent strokes' poses, for the typical figure.
     recent: VecDeque<StrokePose>,
+    /// Frames from here on are rowing (the first stroke, less a margin).
+    rowing_from_us: Option<i64>,
+    /// Where the feet rest: the live figure is drawn from here, so it holds still.
+    feet: Option<(f64, f64)>,
 }
 
 /// Strokes the live typical figure is the median of.
@@ -343,16 +398,24 @@ impl LiveTechnique {
         while self.frames.front().is_some_and(|f| newest - f.captured_us > LIVE_BUFFER_US) {
             self.frames.pop_front();
         }
-        // Before the first stroke, a view from the frames alone, for the mirror.
+        // Before the first stroke, a view from the frames alone, for the
+        // mirror: side and scale, but no tilt, which only rowing shows.
         if self.view.is_none() && self.frames.len() >= FIRST_VIEW_FRAMES {
-            self.view = camera_view(self.frames.make_contiguous());
+            let frames = self.frames.make_contiguous();
+            self.view = camera_view(frames).map(|v| CameraView { tilt_deg: 0.0, ..v });
+            self.feet = self.view.as_ref().and_then(|v| feet(frames, v));
         }
     }
 
-    /// A frame's body as the mirror draws it, once the camera view is known.
+    /// A frame's body as the mirror draws it, once the camera view is known:
+    /// thigh lengths from where the feet rest, x toward the feet, y up.
     pub fn figure(&self, pose: &Pose) -> Option<Figure> {
         let v = self.view.as_ref()?;
-        has_pose(pose).then(|| figure(pose, v))
+        if !has_pose(pose) {
+            return None;
+        }
+        let origin = self.feet.or_else(|| at(pose, v, Joint::Ankle))?;
+        Some(figure_from(pose, v, origin))
     }
 
     /// Median catch and finish over the last strokes the camera saw.
@@ -379,8 +442,13 @@ impl LiveTechnique {
 
     /// Attach pose and faults to a stroke that just completed.
     pub fn stroke(&mut self, s: &mut StrokeRecord) {
+        let from = *self.rowing_from_us.get_or_insert(s.t_catch_us - ROWING_MARGIN_US);
         let frames = self.frames.make_contiguous();
-        let view = camera_view(frames);
+        let rowing = &frames[first_at(frames, from)..];
+        let view = camera_view(rowing);
+        if let Some(v) = &view {
+            self.feet = feet(rowing, v).or(self.feet);
+        }
         if let Some(v) = &view
             && self.strokes >= SYNC_SKIP
             && self.candidates.len() < SYNC_STROKES
@@ -461,7 +529,7 @@ pub fn typical_figures(strokes: &[StrokeRecord]) -> (Figure, Figure) {
 /// Attach pose and faults to every stroke. Returns how the camera saw the session.
 pub fn apply(strokes: &mut [StrokeRecord], events: &[Event]) -> Option<CameraView> {
     let frames = pose_frames(events);
-    let view = camera_view(&frames).map(|mut v| {
+    let view = camera_view(rowing_frames(strokes, &frames)).map(|mut v| {
         v.offset_ms = sync_offset(strokes, &frames, &v);
         v
     });
@@ -599,6 +667,79 @@ mod tests {
                 assert_eq!(kinds(l), kinds(a), "stroke {} ({fault:?})", l.index);
             }
         }
+    }
+
+    #[test]
+    fn climbing_onto_the_erg_doesnt_read_as_a_tilted_camera() {
+        let cfg = SimConfig {
+            pose: Some(PoseSim::default()),
+            ..Default::default()
+        };
+        let mut events = generate(cfg, T0, Duration::from_secs(30));
+        // Ten seconds of the body coming down onto the seat from up and to
+        // the side before the first stroke: a third of the frames, as in a
+        // real recording's pre-roll.
+        let first = pose_frames(&events).into_iter().next().unwrap();
+        let climb: Vec<Event> = (0..300)
+            .map(|i| {
+                let mut p = first.clone();
+                let k = (300 - i) as f32 / 300.0;
+                for pt in &mut p.points {
+                    pt[0] -= 0.3 * k;
+                    pt[1] -= 0.3 * k;
+                }
+                p.captured_us = T0 - 14_000_000 + i * 33_333;
+                Event {
+                    t_us: p.captured_us,
+                    kind: EventKind::Pose(p),
+                }
+            })
+            .collect();
+        events.splice(0..0, climb);
+        let all = camera_view(&pose_frames(&events)).unwrap();
+        assert!(all.tilt_deg.abs() > 3.0, "the climb alone skews the fit: {}", all.tilt_deg);
+        let a = crate::analyze(&events, None);
+        let view = a.summary.unwrap().camera.unwrap();
+        assert!(view.tilt_deg.abs() < 0.5, "only rowing counts: {}", view.tilt_deg);
+    }
+
+    #[test]
+    fn the_live_figure_stands_where_the_feet_rest() {
+        let cfg = SimConfig {
+            pose: Some(PoseSim::default()),
+            ..Default::default()
+        };
+        let events = generate(cfg, T0, Duration::from_secs(30));
+        let mut live = LiveTechnique::new();
+        let mut asm = crate::strokes::StrokeAssembler::new();
+        let mut hips = Vec::new();
+        for ev in &events {
+            if let EventKind::Pose(p) = &ev.kind {
+                live.frame(p);
+                if let Some(f) = live.figure(p) {
+                    let ankle = f[6].unwrap();
+                    assert!(ankle[0].abs() < 0.05 && ankle[1].abs() < 0.05, "feet at the origin: {ankle:?}");
+                    hips.push(f[4].unwrap()[0]);
+                }
+            }
+            if let Some(mut s) = asm.push(ev) {
+                live.stroke(&mut s);
+            }
+        }
+        // The seat slides behind the feet: from about one thigh to two.
+        let (lo, hi) = hips.iter().fold((f32::MAX, f32::MIN), |(lo, hi), &x| (lo.min(x), hi.max(x)));
+        assert!(hi < -0.5 && lo > -2.5 && hi - lo > 0.6, "hip from {lo} to {hi}");
+    }
+
+    #[test]
+    fn the_camera_times_the_handle_not_the_flywheel() {
+        let (strokes, _) = row(None, 0.33);
+        let s = &strokes[10];
+        let (drive, recovery) = handle_timing(s, s.pose.as_ref()).unwrap();
+        let cycle = s.cycle_s().unwrap() * 1000.0;
+        assert!((drive / cycle - 0.33).abs() < 0.05, "drive {drive} of {cycle} ms");
+        assert!((drive + recovery - cycle).abs() < 1.0);
+        assert_eq!(handle_timing(s, None), None);
     }
 
     #[test]

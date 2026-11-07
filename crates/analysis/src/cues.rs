@@ -27,6 +27,33 @@ impl Targets {
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
     }
+
+    /// The stroke rhythm at the middle of the target rate, if there is one.
+    pub fn rhythm(&self) -> Option<Rhythm> {
+        self.rate.map(|(lo, hi)| Rhythm::at((lo + hi) / 2.0))
+    }
+}
+
+/// How long a stroke's drive and recovery should take, in seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Rhythm {
+    pub rate: f64,
+    pub drive_s: f64,
+    pub recovery_s: f64,
+}
+
+impl Rhythm {
+    /// A third of the stroke on the drive (1 s of 3 at rate 20: recovery
+    /// twice the drive), never quicker than 0.8 s or slower than 1.1 s.
+    pub fn at(rate: f64) -> Self {
+        let cycle = 60.0 / rate;
+        let drive_s = (cycle / 3.0).clamp(0.8, 1.1);
+        Self {
+            rate,
+            drive_s,
+            recovery_s: cycle - drive_s,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -282,6 +309,23 @@ impl FocusCoach {
 mod tests {
     use super::*;
     use crate::session::tests::{T0, steady};
+
+    #[test]
+    fn the_rhythm_puts_a_third_of_the_stroke_on_the_drive() {
+        let at = |rate: f64| {
+            let r = Rhythm::at(rate);
+            ((r.drive_s * 100.0).round() / 100.0, (r.recovery_s * 100.0).round() / 100.0)
+        };
+        assert_eq!(at(20.0), (1.0, 2.0));
+        assert_eq!(at(18.0), (1.1, 2.23), "a long stroke: the drive doesn't drag on");
+        assert_eq!(at(30.0), (0.8, 1.2), "a quick one: the drive can't be rushed");
+        let reference = Targets {
+            rate: Some((19.0, 21.0)),
+            ..Default::default()
+        };
+        assert_eq!(reference.rhythm().map(|r| r.rate), Some(20.0));
+        assert_eq!(Targets::default().rhythm(), None);
+    }
 
     fn run(targets: Targets, strokes: &[StrokeRecord]) -> Vec<(f64, Cue)> {
         let mut p = Pacer::new(targets);

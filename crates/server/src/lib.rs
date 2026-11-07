@@ -243,12 +243,19 @@ pub struct StrokeView {
 impl StrokeView {
     fn new(s: &StrokeRecord, start_us: i64) -> Self {
         let paused = s.cycle_s().is_some_and(|c| c > session::MAX_CYCLE_S);
+        // The handle's timing by the camera when it saw the stroke: the PM5's
+        // drive is only the flywheel speeding up.
+        let (drive_ms, recovery_ms) = match technique::handle_timing(s, s.pose.as_ref()) {
+            Some((d, r)) => (Some(d), Some(r)),
+            None => (s.drive_ms, s.recovery_ms),
+        };
+        let ratio = drive_ms.zip(recovery_ms).map(|(d, r)| r / d);
         Self {
             index: s.index,
             t_s: (s.t_catch_us - start_us) as f64 / 1e6,
-            drive_ms: s.drive_ms,
-            recovery_ms: s.recovery_ms.filter(|_| !paused),
-            ratio: s.ratio.filter(|_| !paused),
+            drive_ms,
+            recovery_ms: recovery_ms.filter(|_| !paused),
+            ratio: ratio.filter(|_| !paused),
             watts: s.watts,
             rate: s.rate().filter(|_| !paused),
             joules: s.joules().filter(|_| !paused),

@@ -4,7 +4,7 @@
   // message; the countdown is only display.
   import { clock } from './format.js';
 
-  let { row, onstop } = $props();
+  let { row, minutes = null, onstop } = $props();
 
   // A rest shorter than this isn't worth a countdown.
   const COUNTDOWN_AFTER_S = 15;
@@ -30,7 +30,7 @@
       <strong>Ready.</strong> Start rowing: it records from your first stroke.
     {:else if row.phase === 'rowing'}
       <strong class="rec"><span aria-hidden="true">●</span> Recording</strong>
-      <span class="num">{clock(row.elapsed_s)}</span> · {row.strokes} strokes
+      <span class="num">{clock(row.elapsed_s)}</span>{#if minutes}{' '}<span class="of">of {clock(minutes * 60)}</span>{/if} · {row.strokes} strokes
       {#if ending != null}<span class="ending">· saves in {clock(ending)} unless you row</span>{/if}
     {:else}
       <strong>Saving…</strong>
@@ -74,6 +74,9 @@
   .num {
     font-family: var(--font-num);
     color: var(--ink);
+  }
+  .of {
+    font-family: var(--font-num);
   }
   .ending {
     color: var(--warn);

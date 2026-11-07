@@ -275,6 +275,8 @@ pub struct Coach {
     pub screens: Option<LiveSender>,
     /// Cues given since the recorder last took them.
     said: Vec<String>,
+    /// What the row aims for, for the screens.
+    targets: Targets,
 }
 
 impl Coach {
@@ -292,7 +294,7 @@ impl Coach {
         }
         let pacer = (!targets.is_empty()).then(|| {
             println!("Cues: {}", describe_targets(&targets));
-            Pacer::new(targets)
+            Pacer::new(targets.clone())
         });
         if let Some(f) = setup.focus {
             println!("Focus: {} (\"{}\")", f.label(), f.cue());
@@ -306,6 +308,7 @@ impl Coach {
             speaker,
             screens: None,
             said: Vec::new(),
+            targets,
         }
     }
 
@@ -346,6 +349,7 @@ impl Coach {
         let Some(hub) = &self.screens else { return };
         let (typical_catch, typical_finish) = self.technique.typical();
         let pose = r.pose.as_ref();
+        let timing = analysis::technique::handle_timing(r, pose);
         live::publish(
             hub,
             &LiveMsg::Stroke(Box::new(StrokeMsg {
@@ -355,6 +359,8 @@ impl Coach {
                 hr: r.hr_bpm,
                 zone: r.hr_bpm.zip(self.heart.as_ref()).map(|(b, h)| h.zone(b)),
                 faults: r.faults.iter().map(|h| h.fault).collect(),
+                drive_s: timing.map(|t| t.0 / 1000.0),
+                recovery_s: timing.map(|t| t.1 / 1000.0),
                 catch: pose.map(|p| &p.catch_figure),
                 finish: pose.map(|p| &p.finish_figure),
                 catch_angles: pose.map(|p| p.catch),
@@ -365,10 +371,13 @@ impl Coach {
         );
     }
 
+    /// The focus and the targets, for screens that just connected.
     pub fn publish_focus(&self) {
         if let Some(hub) = &self.screens {
             let fault = self.focus.as_ref().map(|f| f.focus());
             live::publish(hub, &LiveMsg::Focus { fault, cue: fault.map(|f| f.cue()) });
+            let targets = &self.targets;
+            live::publish(hub, &LiveMsg::Targets { targets, rhythm: targets.rhythm() });
         }
     }
 

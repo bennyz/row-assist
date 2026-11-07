@@ -3,6 +3,7 @@
 //! screen gets each message. A screen that falls behind skips ahead rather
 //! than queueing stale frames.
 
+use analysis::cues::{Rhythm, Targets};
 use analysis::pose::{Angles, Framing};
 use analysis::technique::{CATCH_TRUNK_GUIDE, FINISH_TRUNK_GUIDE, Fault, Figure};
 use axum::extract::State;
@@ -30,7 +31,8 @@ pub enum LiveMsg<'a> {
         catch_trunk: (f64, f64),
         finish_trunk: (f64, f64),
     },
-    /// The body in one camera frame (thigh lengths from the hip, x toward the feet).
+    /// The body in one camera frame: thigh lengths from where the feet rest,
+    /// x toward the feet, y up.
     Figure { joints: &'a Figure },
     /// A completed stroke.
     Stroke(Box<StrokeMsg<'a>>),
@@ -38,6 +40,13 @@ pub enum LiveMsg<'a> {
     Cue { text: &'a str },
     /// The focus fault for this session.
     Focus { fault: Option<Fault>, cue: Option<&'a str> },
+    /// What this row aims for (each band `(low, high)`), and the stroke
+    /// rhythm at the target rate. Every second, like the focus.
+    Targets {
+        #[serde(flatten)]
+        targets: &'a Targets,
+        rhythm: Option<Rhythm>,
+    },
     /// The camera's setup check, twice a second while a camera page is connected.
     Framing(&'a Framing),
     /// The row `rowctl serve` runs, every second.
@@ -52,6 +61,9 @@ pub struct StrokeMsg<'a> {
     pub hr: Option<f64>,
     pub zone: Option<u8>,
     pub faults: Vec<Fault>,
+    /// The handle's drive and recovery, seconds, by the camera.
+    pub drive_s: Option<f64>,
+    pub recovery_s: Option<f64>,
     pub catch: Option<&'a Figure>,
     pub finish: Option<&'a Figure>,
     pub catch_angles: Option<Angles>,

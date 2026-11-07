@@ -4,12 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::metrics::{efficiency_factor, watts_from_pace};
 use crate::strokes::{CURVE_POINTS, StrokeRecord};
-use crate::technique::{CameraView, FaultRate, fault_rates};
+use crate::technique::{CameraView, FaultRate, fault_rates, handle_timing};
 use crate::zones::{HeartProfile, HeartStats, heart_stats};
 
 /// Bump when the numbers below change meaning, so stored summaries can be
 /// recomputed from their recordings.
-pub const ANALYSIS_VERSION: u32 = 1;
+/// 2: camera tilt from rowing frames only; drive time and ratio from the
+/// camera's handle timing when there is a camera.
+pub const ANALYSIS_VERSION: u32 = 2;
 
 /// A catch-to-catch time longer than this (under 10 spm) is a pause, not a stroke.
 pub const MAX_CYCLE_S: f64 = 6.0;
@@ -106,8 +108,13 @@ pub struct Summary {
     pub rate_20: Option<Segment>,
     /// Median over strokes.
     pub drag_factor: Option<u8>,
+    /// Mean drive time and recovery/drive: the handle's, by the camera, when
+    /// it saw most strokes (`handle_timing`); else the PM5's, whose drive is
+    /// only the flywheel speeding up.
     pub drive_ms: Option<f64>,
     pub ratio: Option<f64>,
+    #[serde(default)]
+    pub handle_timing: bool,
     pub peak_n: Option<f64>,
     /// Readings from first catch to end; zones and TRIMP need a profile.
     pub heart: Option<HeartStats>,
@@ -161,6 +168,8 @@ pub fn summarize(strokes: &[StrokeRecord], hearts: &[(i64, u16)], profile: Optio
     dfs.sort_unstable();
 
     let window: Vec<_> = hearts.iter().copied().filter(|&(t, _)| t >= start && t <= end).collect();
+    let timed: Vec<(f64, f64)> = complete.iter().filter_map(|s| handle_timing(s, s.pose.as_ref())).collect();
+    let by_camera = !timed.is_empty() && timed.len() * 2 >= complete.len();
     Some(Summary {
         analysis_version: ANALYSIS_VERSION,
         started_at_us: start,
@@ -173,8 +182,17 @@ pub fn summarize(strokes: &[StrokeRecord], hearts: &[(i64, u16)], profile: Optio
         last_10_min,
         rate_20,
         drag_factor: dfs.get(dfs.len() / 2).copied(),
-        drive_ms: mean(complete.iter().filter_map(|s| s.drive_ms).collect()),
-        ratio: mean(complete.iter().filter_map(|s| s.ratio).collect()),
+        drive_ms: if by_camera {
+            mean(timed.iter().map(|t| t.0).collect())
+        } else {
+            mean(complete.iter().filter_map(|s| s.drive_ms).collect())
+        },
+        ratio: if by_camera {
+            mean(timed.iter().map(|t| t.1 / t.0).collect())
+        } else {
+            mean(complete.iter().filter_map(|s| s.ratio).collect())
+        },
+        handle_timing: by_camera,
         peak_n: mean(complete.iter().filter_map(|s| s.peak_n).collect()),
         heart: heart_stats(&window, profile),
         profile: profile.copied(),
