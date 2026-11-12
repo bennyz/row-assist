@@ -58,8 +58,8 @@ Useful formulas:
   (`rowctl` also prints it) for `http://<lan-ip>:8080/phone`, a setup page that checks whether
   the phone trusts the CA yet and links to the HTTPS camera page on `:8443`.
 - **Only the laptop sees the data.** The server listens on the network for the phone, but
-  another device gets only the app's files, the phone's setup and camera socket, and the
-  token-guarded Watch upload; sessions, health and the row answer 403 (`server::local_only`).
+  another device gets only the app's files and the phone's setup and camera socket; sessions,
+  health and the row answer 403 (`server::local_only`). Nothing takes data from the network.
 - **Light beats pixels.** The phone's camera beats the laptop's webcam (720p MJPEG only) mainly in dim
   light: pose breaks on noise and motion blur, not resolution (the model works on a ~256 px
   crop). Whole body and full slide in frame; light from the camera side, never behind the rower.
@@ -78,7 +78,7 @@ Useful formulas:
 | PM5 | USB HID, CSAFE | stroke state, watts, pace, spm, distance, drag factor, force curve; heart rate of a strap paired to it | ~20 Hz status; force curve per drive; HR 1 Hz | stroke boundaries (master clock), effort, force-curve technique; zones when the strap is paired to the PM5 |
 | Polar H10 | BLE HR service (0x180D) + Polar PMD | HR, RR intervals; chest accelerometer (experimental) | per beat | zones, load, drift; HRV |
 | Phone camera | Safari, MediaPipe Pose Landmarker | 33 body landmarks (near side used) | ~30 fps | posture, drive/recovery sequencing |
-| Apple Watch | iPhone Shortcut → HTTP POST | overnight HRV (SDNN), resting HR, sleep | daily | readiness, Karvonen HR zones |
+| Apple Watch | iPhone Shortcut → home server (nutridag) → fetched over HTTP | overnight HRV (SDNN), resting HR, sleep | daily | readiness, Karvonen HR zones |
 | Concept2 log | CSV import (later: Logbook API) | historic sessions | one-off / sync | baselines from May 2025 |
 
 Video never leaves the browser; only landmark coordinates are sent to the server. The
@@ -102,7 +102,7 @@ time and served to the laptop only:
  phone →   │   timestamped  │                       (1 record/stroke)  technique│
  browser ──┴──── events ──▶ │                                          effort   │
  (landmarks only)           │ recorder ─▶ session files        coach ─▶ audio   │
- iPhone Shortcut ─HTTP────▶ │ readiness        planner ─▶ next workout ─▶ PM5   │
+ home server ◀─HTTP fetch── │ readiness        planner ─▶ next workout ─▶ PM5   │
                             │ SQLite                                            │
                             └───────────────────────────────────────────────────┘
 ```
@@ -115,7 +115,7 @@ time and served to the laptop only:
 - A row ends after `--end-after` (120 s) without a stroke, or Stop on the page; a shutdown
   saves it too. Under 10 strokes is a bump of the handle and is dropped. The row is analysed
   and saved, the page opens its review, and the next row is planned (also at midnight, and
-  when Watch data arrives while waiting: `Api::health_posted`).
+  when a fetch brings new Watch data while waiting: `server::health::keep_synced`).
 - Besides the devices' events, the recording gets every cue the coach gave (`Cue`), the
   blocks the rower marks on the row screen (`Marker`, `POST /api/row/mark`), and the plan and
   focus in its header; camera stills go beside it (§3). On the review, the rower scores how
@@ -429,17 +429,23 @@ the review screen. That comment is where the rower says the screen was wrong.
 
 ## 7. Readiness (Apple Watch)
 
-- An iPhone Shortcut (time-of-day automation) reads the last **7 days** of HRV, resting HR and sleep
-  and POSTs them to `POST /api/health/daily` on the laptop. The server upserts by date, so a run
-  missed while the laptop is off is backfilled by the next one.
-- Auth: a shared token header (LAN only).
+- Apple Health has no API a Linux machine can read, so the phone has to push: an iPhone Shortcut
+  (time-of-day automation) posts the last **7 days** of health data. It posts to the home server
+  (nutridag, on a Raspberry Pi), not to the laptop: the Pi is always on, the laptop is usually
+  asleep when the automation fires, and nutridag takes the same data for its own use, so one
+  Shortcut serves both. Setting the Shortcut up is in nutridag's README ("Apple Health").
+- Row Assist fetches the rower's own days from there (`GET <link>/days`), at start and every
+  ten minutes, and keeps its own copy, so a row is planned the same with the Pi unreachable.
+  The link is the rower's health link from nutridag's `/health` command, a credential: set once
+  with `rowctl health --source <link>`, kept in `<data>/health-source` (owner-readable only).
 - Readiness: ln(HRV) 7-day mean vs the 60-day band, resting HR vs baseline, last night's sleep
   → green / amber / red. Rules are explicit and tunable, not a black box.
 
-**Built:** `POST /api/health/daily` (`crates/server/src/health.rs`, token in
-`<data>/api-token`, constant-time compare) takes raw samples and aggregates them per day
-(`store::health`): mean HRV, mean resting HR, and sleep as the union of asleep intervals
-(phone and Watch overlap) counted for the morning it ended. `analysis::readiness`:
+**Built:** `server::health::keep_synced` fetches and `store::health` stores a row per day as
+nutridag aggregates it: the day's mean HRV, its latest resting HR, and hours asleep (overlapping
+phone and Watch intervals merged) counted for the morning the night ended. A fetch that fails
+is logged once, the stored days stay in use, and `rowctl health` makes the same fetch and
+prints why it failed. `analysis::readiness`:
 
 | Signal | Amber | Red |
 |---|---|---|
@@ -449,8 +455,15 @@ the review screen. That comment is where the rower says the screen was wrong.
 
 One amber → amber; two ambers or any red → red. Shown at the start of `rowctl record`, by
 `rowctl health`, and on the review screen's sidebar. HRrest for the zones is the two-week
-median Watch resting HR (after a week of data) unless set by hand. Shortcut setup:
-`docs/SHORTCUT.md` (untested on a phone).
+median Watch resting HR (after a week of data) unless set by hand.
+
+When the newest day is older than yesterday, at least one daily upload was missed: readiness
+is then "unknown" with the reason "no Watch data for N days", on the row screen too, instead
+of a verdict from last week's numbers.
+
+Until 2026-11-12 the Shortcut posted straight to the laptop (`POST /api/health/daily`, with a
+token). It was replaced, not kept alongside: uploads only landed while the laptop was awake,
+and a second Shortcut was a second thing to stop running unnoticed.
 
 ---
 
@@ -586,7 +599,7 @@ Each phase ends with something usable on the erg.
 | **0. Foundations** | workspace; event model; PM5 driver port + drag factor + **force curve spike**; H10 HR + RR; recorder, replay, dump; Concept2 CSV importer | a real row is recorded, replayed, and its force curves dumped; the CSV is in SQLite. *Status: code done and verified with the simulator; CSV imported. Waiting on hardware: `pm5-probe`, then a real `record`.* |
 | **1. Effort** | stroke assembler; session persistence; zones, TRIMP, EF, decoupling, watts at 20; drag-factor check; review screen; audio zone cues; reference-row comparison | comeback-ramp sessions are rowed with the app. *Status: built: `rowctl record --plan … --speak`, `analyze`, `sessions`, `profile`, `simulate`, and the review screen (`rowctl serve`). Waiting on the first real comeback-ramp rows.* |
 | **2. Posture** | camera page; framing check; near-side + horizon + scale; sync auto-calibration; joint angles; faults 1–4; one-focus coach; **mirror on the front screen**; deliberate-fault fixtures | the coach flags deliberately rowed faults and stays quiet on clean strokes. *Status: built: camera page (`rowctl record --camera`), setup check, near side, tilt, scale, sync, joint angles, faults 1–4, technique on the review screen, the one-focus coach (live), a kinematic rower in the simulator (`--sim-fault`), the mirror on the front screen, and the good stroke position by position (§5.4: the target body by the handle, each stroke's sequence, faults 7 and 9). Next: real deliberately-rowed fixtures and threshold tuning, which need rows on the erg.* |
-| **3. Readiness** | Shortcut endpoint; baselines; readiness on setup screen; Karvonen zones from Watch resting HR | a week of Watch data shows up and changes the zones. *Status: built and tested with synthetic data; waiting on the Shortcut (docs/SHORTCUT.md).* |
+| **3. Readiness** | Watch data fetch; baselines; readiness on setup screen; Karvonen zones from Watch resting HR | a week of Watch data shows up and changes the zones. *Status: built; the days are fetched from the home server.* |
 | **4. Improvement loop** | planner; PM5 workout programming; progress screen; form under fatigue; benchmarks | the app proposes next session + focus and loads it onto the PM5. *Status: planner + benchmark scheduling (`rowctl plan`) and the progress screen built; PM5 programming needs hardware.* |
 | **Later** | H10 accelerometer; faults 5, 6 and 8; front camera view (symmetry); optional video capture for review; Concept2 Logbook API sync (incl. stroke data if present); weekly written summary | — |
 

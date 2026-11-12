@@ -6,6 +6,8 @@
 //!   the weekly trend against your own band is what means something.
 //! - Resting HR: 7-day mean against the 30 days before it.
 //! - Sleep: last night.
+//! - None of it when the Watch's days stopped arriving: readiness from last
+//!   week's data would be a guess, so it says how old the data is instead.
 
 use serde::{Deserialize, Serialize};
 
@@ -44,6 +46,9 @@ pub const HRV_BASELINE_DAYS: i64 = 60;
 pub const RHR_BASELINE_DAYS: i64 = 30;
 /// A baseline needs this many days with data.
 pub const MIN_BASELINE_DAYS: usize = 14;
+/// The newest day of Watch data may be this old (yesterday: today's arrives
+/// during the day). Older, and at least one daily upload was missed.
+pub const FRESH_DAYS: i64 = 1;
 /// Days of resting HR the zones' HRrest is the median of.
 pub const ZONE_REST_DAYS: i64 = 14;
 /// The weekly ln(HRV) more than this many SDs below the band is a red flag.
@@ -101,6 +106,17 @@ pub fn readiness(days: &[HealthDay], today: i64) -> Readiness {
         sleep_last_h,
     };
 
+    let newest = days
+        .iter()
+        .filter(|d| d.day <= today && (d.hrv_ms.is_some() || d.resting_hr.is_some() || d.sleep_h.is_some()))
+        .map(|d| d.day)
+        .max();
+    if let Some(age) = newest.map(|day| today - day)
+        && age > FRESH_DAYS
+    {
+        r.reasons = vec![format!("no Watch data for {age} days: check the phone's Shortcut runs daily")];
+        return r;
+    }
     let mut have_baseline = false;
     if hrv_base.len() >= MIN_BASELINE_DAYS
         && let (Some(m), Some(s), Some(w)) = (mean(&hrv_base), sd(&hrv_base), r.hrv_week_ln)
@@ -229,6 +245,17 @@ mod tests {
         assert_eq!(r.level, Level::Unknown);
         assert_eq!(r.hrv_band_ln, None);
         assert!(readiness(&[], TODAY).reasons.is_empty());
+    }
+
+    #[test]
+    fn data_that_stopped_arriving_is_not_judged() {
+        let mut d = steady();
+        last_week(&mut d, |x| x.hrv_ms = Some(30.0));
+        assert_eq!(readiness(&d, TODAY).level, Level::Red);
+        assert_eq!(readiness(&d, TODAY + 1).level, Level::Red, "this morning's upload may not be in yet");
+        let r = readiness(&d, TODAY + 4);
+        assert_eq!(r.level, Level::Unknown);
+        assert_eq!(r.reasons, vec!["no Watch data for 4 days: check the phone's Shortcut runs daily"]);
     }
 
     #[test]

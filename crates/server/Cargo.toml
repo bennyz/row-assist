@@ -21,6 +21,7 @@ rustls.workspace = true
 tokio-rustls.workspace = true
 rcgen.workspace = true
 hyper.workspace = true
+http-body-util.workspace = true
 hyper-util.workspace = true
 time.workspace = true
 qrcode = { workspace = true, features = ["svg"] }

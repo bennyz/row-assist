@@ -1,109 +1,14 @@
-//! Apple Watch recovery data: the samples an iPhone Shortcut posts, turned
-//! into one row per day, and the token that guards the endpoint.
+//! Apple Watch recovery data, a row per day, and where it comes from: the
+//! rower's own record on the home server (nutridag), which the phone posts
+//! to every day and which, unlike this computer, is always on to receive it.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use analysis::readiness::HealthDay;
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, FixedOffset, NaiveDate};
+use chrono::NaiveDate;
 use serde::Deserialize;
-use serde::de::DeserializeOwned;
 use sqlx::{Row, SqlitePool};
-
-/// What the Shortcut sends. Every list is optional.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct Samples {
-    #[serde(deserialize_with = "lenient_list")]
-    pub hrv: Vec<Sample>,
-    #[serde(deserialize_with = "lenient_list")]
-    pub resting_hr: Vec<Sample>,
-    #[serde(deserialize_with = "lenient_list")]
-    pub sleep: Vec<SleepSample>,
-}
-
-/// A list, or what Shortcuts makes of a list of dictionaries put into a
-/// dictionary: one text with each item's JSON on a line of its own (or a
-/// JSON array as text). A single item may come without the list.
-fn lenient_list<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: DeserializeOwned,
-{
-    use serde::de::Error;
-    use serde_json::Value;
-    let items = match Value::deserialize(d)? {
-        Value::Array(items) => items,
-        Value::Null => vec![],
-        item @ Value::Object(_) => vec![item],
-        Value::String(text) if text.trim_start().starts_with('[') => {
-            serde_json::from_str(&text).map_err(|e| D::Error::custom(format!("a list as text that isn't JSON: {e}")))?
-        }
-        Value::String(text) => text
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(|line| {
-                serde_json::from_str(line).map_err(|e| D::Error::custom(format!("a line that isn't a sample: {e}")))
-            })
-            .collect::<Result<_, _>>()?,
-        _ => return Err(D::Error::custom("expected a list of samples")),
-    };
-    items
-        .into_iter()
-        .map(|item| serde_json::from_value(item).map_err(D::Error::custom))
-        .collect()
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Sample {
-    pub date: String,
-    #[serde(deserialize_with = "lenient_number")]
-    pub value: f64,
-}
-
-/// A number, or text starting with one ("48 ms"): Shortcuts can send either,
-/// depending on how the dictionary was built.
-fn lenient_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
-    use serde::de::Error;
-    match serde_json::Value::deserialize(d)? {
-        serde_json::Value::Number(n) => n.as_f64().ok_or_else(|| D::Error::custom("number out of range")),
-        serde_json::Value::String(s) => s
-            .trim()
-            .split(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
-            .next()
-            .and_then(|t| t.parse().ok())
-            .ok_or_else(|| D::Error::custom(format!("not a number: {s:?}"))),
-        other => Err(D::Error::custom(format!("not a number: {other}"))),
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct SleepSample {
-    pub start: String,
-    pub end: String,
-    /// "Core", "Deep", "REM", "Asleep", "In Bed", "Awake"…
-    #[serde(default)]
-    pub value: String,
-}
-
-/// A timestamp as Shortcuts or a Health export writes it: ISO 8601,
-/// `2026-11-01 03:12:00 +0200`, or a bare date. Keeps its own offset, so the
-/// day is the local day it was recorded.
-fn parse_time(s: &str) -> Result<DateTime<FixedOffset>> {
-    let s = s.trim();
-    if let Ok(t) = DateTime::parse_from_rfc3339(s) {
-        return Ok(t);
-    }
-    if let Ok(t) = DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S %z") {
-        return Ok(t);
-    }
-    if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return Ok(d.and_hms_opt(12, 0, 0).unwrap().and_utc().fixed_offset());
-    }
-    bail!("unrecognised date {s:?}")
-}
 
 fn epoch() -> NaiveDate {
     NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()
@@ -117,70 +22,40 @@ pub fn day_date(n: i64) -> NaiveDate {
     epoch() + chrono::Duration::days(n)
 }
 
-fn is_asleep(value: &str) -> bool {
-    let v = value.to_ascii_lowercase().replace(' ', "");
-    !(v.contains("inbed") || v.contains("awake"))
+/// What the home server answers at `<link>/days`: its days, each with
+/// whichever metrics it has (steps, weight and the rest are not ours).
+#[derive(Debug, Deserialize)]
+struct Answer {
+    days: Vec<AnswerDay>,
 }
 
-/// One row per day: mean HRV, mean resting HR, and sleep as the union of
-/// asleep intervals (phone and Watch both log sleep; summing would double it),
-/// counted for the day the night ended.
-pub fn aggregate(s: &Samples) -> Result<Vec<HealthDay>> {
-    #[derive(Default)]
-    struct Acc {
-        hrv: Vec<f64>,
-        rhr: Vec<f64>,
-        sleep: Vec<(i64, i64)>,
-    }
-    let mut days: BTreeMap<i64, Acc> = BTreeMap::new();
-    for x in &s.hrv {
-        let t = parse_time(&x.date)?;
-        if x.value > 0.0 {
-            days.entry(day_number(t.date_naive())).or_default().hrv.push(x.value);
-        }
-    }
-    for x in &s.resting_hr {
-        let t = parse_time(&x.date)?;
-        if x.value > 0.0 {
-            days.entry(day_number(t.date_naive())).or_default().rhr.push(x.value);
-        }
-    }
-    for x in s.sleep.iter().filter(|x| is_asleep(&x.value)) {
-        let (a, b) = (parse_time(&x.start)?, parse_time(&x.end)?);
-        if b > a {
-            days.entry(day_number(b.date_naive()))
-                .or_default()
-                .sleep
-                .push((a.timestamp(), b.timestamp()));
-        }
-    }
-    let mean = |v: &[f64]| (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64);
-    Ok(days
-        .into_iter()
-        .map(|(day, mut acc)| HealthDay {
-            day,
-            hrv_ms: mean(&acc.hrv),
-            resting_hr: mean(&acc.rhr),
-            sleep_h: (!acc.sleep.is_empty()).then(|| union_seconds(&mut acc.sleep) as f64 / 3600.0),
+#[derive(Debug, Deserialize)]
+struct AnswerDay {
+    day: String,
+    /// The day's mean SDNN, ms.
+    hrv: Option<f64>,
+    resting_hr: Option<f64>,
+    /// Asleep, for the morning the night ended.
+    sleep_hours: Option<f64>,
+}
+
+/// The days in the home server's answer that carry anything of ours.
+pub fn parse_days(answer: &[u8]) -> Result<Vec<HealthDay>> {
+    let answer: Answer = serde_json::from_slice(answer).context("not the list of days expected")?;
+    answer
+        .days
+        .iter()
+        .filter(|d| d.hrv.is_some() || d.resting_hr.is_some() || d.sleep_hours.is_some())
+        .map(|d| {
+            let day = NaiveDate::parse_from_str(&d.day, "%Y-%m-%d").with_context(|| format!("bad day {:?}", d.day))?;
+            Ok(HealthDay {
+                day: day_number(day),
+                hrv_ms: d.hrv,
+                resting_hr: d.resting_hr,
+                sleep_h: d.sleep_hours,
+            })
         })
-        .collect())
-}
-
-fn union_seconds(spans: &mut [(i64, i64)]) -> i64 {
-    spans.sort_unstable();
-    let mut total = 0;
-    let mut cur: Option<(i64, i64)> = None;
-    for &(a, b) in spans.iter() {
-        cur = match cur {
-            Some((ca, cb)) if a <= cb => Some((ca, cb.max(b))),
-            Some((ca, cb)) => {
-                total += cb - ca;
-                Some((a, b))
-            }
-            None => Some((a, b)),
-        };
-    }
-    total + cur.map_or(0, |(a, b)| b - a)
+        .collect()
 }
 
 /// Insert or update by day; a value that's missing keeps what was stored.
@@ -225,31 +100,34 @@ pub async fn list_days(pool: &SqlitePool, from: i64) -> Result<Vec<HealthDay>> {
         .collect()
 }
 
-/// The shared secret the Shortcut sends, created on first use (32 hex chars
-/// from the OS's random source) and kept beside the database.
-pub fn token(path: &Path) -> Result<String> {
-    if let Ok(t) = std::fs::read_to_string(path) {
-        let t = t.trim().to_string();
-        if t.len() >= 16 {
-            return Ok(t);
-        }
+/// The rower's health link on the home server, as nutridag's `/health` gives
+/// it (`http://<server>/health/<secret>`), if one has been set. It is a
+/// credential: kept beside the database, readable by the owner only, and
+/// never printed or logged.
+pub fn source(path: &Path) -> Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(link) => Ok(Some(link.trim().to_string())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("read {}", path.display())),
     }
-    let mut bytes = [0u8; 16];
-    use std::io::Read;
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut bytes))
-        .context("read /dev/urandom")?;
-    let t: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+}
+
+pub fn set_source(path: &Path, link: &str) -> Result<()> {
+    let link = link.trim().trim_end_matches('/');
+    // The home server speaks plain HTTP on the home network, and so do we.
+    if !link.starts_with("http://") || !link.contains("/health/") {
+        bail!("expected the link nutridag's /health command gives: http://<server>/health/<secret>");
+    }
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, &t).with_context(|| format!("write {}", path.display()))?;
+    std::fs::write(path, link).with_context(|| format!("write {}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
-    Ok(t)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -257,63 +135,28 @@ mod tests {
     use super::*;
     use crate::db::open;
 
-    const POST: &str = r#"{
-        "hrv": [
-            {"date": "2026-11-01T03:12:00+02:00", "value": 50},
-            {"date": "2026-11-01T14:00:00+02:00", "value": "60 ms"},
-            {"date": "2026-10-31 23:30:00 +0200", "value": 40}
-        ],
-        "resting_hr": [{"date": "2026-11-01", "value": "56 count/min"}],
-        "sleep": [
-            {"start": "2026-10-31T23:30:00+02:00", "end": "2026-11-01T02:00:00+02:00", "value": "Core"},
-            {"start": "2026-11-01T01:00:00+02:00", "end": "2026-11-01T06:30:00+02:00", "value": "Asleep"},
-            {"start": "2026-10-31T23:00:00+02:00", "end": "2026-11-01T07:00:00+02:00", "value": "In Bed"},
-            {"start": "2026-11-01T06:30:00+02:00", "end": "2026-11-01T06:40:00+02:00", "value": "Awake"}
-        ]
-    }"#;
-
     #[test]
-    fn samples_become_days() {
-        let s: Samples = serde_json::from_str(POST).unwrap();
-        let days = aggregate(&s).unwrap();
+    fn the_home_servers_days_become_ours() {
+        let answer = br#"{"days": [
+            {"day": "2026-10-31", "steps": 8532.0, "weight": 70.0},
+            {"day": "2026-11-01", "hrv": 55.0, "resting_hr": 56.0, "sleep_hours": 7.0, "steps": 9000.0},
+            {"day": "2026-11-02", "sleep_hours": 6.5}
+        ]}"#;
         let nov1 = day_number(NaiveDate::from_ymd_opt(2026, 11, 1).unwrap());
-        assert_eq!(days.len(), 2);
-        let d = days.iter().find(|d| d.day == nov1).unwrap();
-        assert_eq!(d.hrv_ms, Some(55.0));
-        assert_eq!(d.resting_hr, Some(56.0));
-        // 23:30–06:30 asleep (two overlapping sources), in bed and awake excluded.
-        assert_eq!(d.sleep_h, Some(7.0));
-        let oct31 = days.iter().find(|d| d.day == nov1 - 1).unwrap();
-        assert_eq!((oct31.hrv_ms, oct31.sleep_h), (Some(40.0), None));
-        assert!(aggregate(&serde_json::from_str(r#"{"hrv": [{"date": "yesterday", "value": 1}]}"#).unwrap()).is_err());
-    }
-
-    /// A list variable of dictionaries, put into the request's dictionary,
-    /// reaches us as text: one item's JSON per line, values as text.
-    #[test]
-    fn lists_sent_as_text_one_item_per_line_are_read() {
-        let lines = |items: &[&str]| serde_json::Value::String(items.join("\n"));
-        let post = serde_json::json!({
-            "hrv": lines(&[
-                r#"{"value":"50.0","date":"2026-11-01T03:12:00+02:00"}"#,
-                r#"{"value":"60.0","date":"2026-11-01T14:00:00+02:00"}"#,
-            ]),
-            "resting_hr": r#"[{"value": "56", "date": "2026-11-01"}]"#,
-            "sleep": {"start": "2026-10-31T23:30:00+02:00", "end": "2026-11-01T06:30:00+02:00", "value": "Core"},
-        });
-        let s: Samples = serde_json::from_value(post).unwrap();
-        let days = aggregate(&s).unwrap();
-        let nov1 = day_number(NaiveDate::from_ymd_opt(2026, 11, 1).unwrap());
-        let d = days.iter().find(|d| d.day == nov1).unwrap();
-        assert_eq!((d.hrv_ms, d.resting_hr, d.sleep_h), (Some(55.0), Some(56.0), Some(7.0)));
-
-        let bad = serde_json::json!({"hrv": "not a sample"});
-        let e = serde_json::from_value::<Samples>(bad).unwrap_err().to_string();
-        assert!(e.contains("a line that isn't a sample"), "{e}");
+        assert_eq!(
+            parse_days(answer).unwrap(),
+            vec![
+                HealthDay { day: nov1, hrv_ms: Some(55.0), resting_hr: Some(56.0), sleep_h: Some(7.0) },
+                HealthDay { day: nov1 + 1, hrv_ms: None, resting_hr: None, sleep_h: Some(6.5) },
+            ],
+            "a day of steps alone is not ours"
+        );
+        assert!(parse_days(br#"{"days": [{"day": "yesterday", "hrv": 1}]}"#).is_err());
+        assert!(parse_days(b"<html>").is_err());
     }
 
     #[tokio::test]
-    async fn upserts_keep_what_a_later_post_leaves_out() {
+    async fn upserts_keep_what_a_later_fetch_leaves_out() {
         let dir = std::env::temp_dir().join(format!("row-assist-health-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let pool = open(&dir.join("t.db")).await.unwrap();
@@ -325,10 +168,11 @@ mod tests {
         let back = list_days(&pool, day - 1).await.unwrap();
         assert_eq!(back, vec![HealthDay { day, hrv_ms: Some(52.0), resting_hr: Some(56.0), sleep_h: Some(7.0) }]);
 
-        let path = dir.join("api-token");
-        let t = token(&path).unwrap();
-        assert_eq!(t.len(), 32);
-        assert_eq!(token(&path).unwrap(), t, "stable once created");
+        let path = dir.join("health-source");
+        assert_eq!(source(&path).unwrap(), None);
+        assert!(set_source(&path, "https://elsewhere.example/").is_err());
+        set_source(&path, " http://home:8080/health/s3cret-s3cret-s3cret/\n").unwrap();
+        assert_eq!(source(&path).unwrap().as_deref(), Some("http://home:8080/health/s3cret-s3cret-s3cret"));
         pool.close().await;
         std::fs::remove_dir_all(&dir).unwrap();
     }

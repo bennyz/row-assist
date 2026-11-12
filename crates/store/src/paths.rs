@@ -25,7 +25,7 @@ pub fn sessions_dir() -> PathBuf {
     data_dir().join("sessions")
 }
 
-/// The shared secret for posting Watch data.
-pub fn token_path() -> PathBuf {
-    data_dir().join("api-token")
+/// The rower's health link on the home server (`health::source`).
+pub fn health_source_path() -> PathBuf {
+    data_dir().join("health-source")
 }

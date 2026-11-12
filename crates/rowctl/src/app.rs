@@ -4,7 +4,7 @@
 //! devices stay connected; a row records from its first stroke and ends by
 //! itself after `--end-after` seconds without one (or with Stop on the page).
 //! Then it's analysed and saved, the page shows its review, and the next row
-//! is planned. Watch data posted while waiting re-plans at once.
+//! is planned. Watch data fetched while waiting re-plans at once.
 //!
 //! Besides the devices, a recording gets what the coach said, what the rower
 //! marked as rowed on purpose (from the row screen), and the plan and focus
@@ -73,14 +73,12 @@ pub struct ServeArgs {
 }
 
 pub async fn run(args: ServeArgs) -> Result<()> {
-    let token = store::health::token(&store::paths::token_path())?;
     let web = args.web.clone().unwrap_or_else(crate::default_web_dir);
     if args.review_only {
         return server::serve(server::Config {
             addr: args.addr,
             db: args.db.unwrap_or_else(store::paths::db_path),
             web_dir: web,
-            token: Some(token),
         })
         .await;
     }
@@ -98,11 +96,14 @@ pub async fn run(args: ServeArgs) -> Result<()> {
     let device_tasks = spawn_devices(devices, clock, &tx);
 
     let hub = live::channel();
-    let posted = Arc::new(Notify::new());
+    // Watch data comes from the home server, when a link to it is set.
+    let watch_data = Arc::new(Notify::new());
+    if let Some(link) = store::health::source(&store::paths::health_source_path())? {
+        tokio::spawn(server::health::keep_synced(ctx.pool.clone(), link, watch_data.clone()));
+    }
     let (state_tx, state) = watch::channel(RowState::default());
     let (commands, mut command_rx) = mpsc::channel(8);
-    let mut api = server::Api::new(ctx.pool.clone(), Some(token));
-    api.health_posted = Some(posted.clone());
+    let mut api = server::Api::new(ctx.pool.clone());
     api.row = Some(row::Control { state, commands });
     let session = server::Live::into_session(clock, tx.clone()).with_broadcast(hub.clone());
     let camera = session.clone();
@@ -126,7 +127,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
                 None => break,
             },
             _ = tick.tick() => runner.tick(clock.now_us()).await,
-            _ = posted.notified() => runner.watch_data().await,
+            _ = watch_data.notified() => runner.watch_data().await,
             Some(c) = command_rx.recv() => match c {
                 Command::Stop => runner.end().await,
                 Command::Mark(m) => runner.mark(m),

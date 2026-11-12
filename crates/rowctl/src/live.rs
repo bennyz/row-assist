@@ -568,7 +568,7 @@ async fn run(
     if args.camera || args.phone {
         let hub = live::channel();
         let session = server::Live::into_session(clock, tx.clone()).with_broadcast(hub.clone());
-        let api = pool.map(|pool| server::Api::new(pool, store::health::token(&store::paths::token_path()).ok()));
+        let api = pool.map(server::Api::new);
         if let Some(tasks) = crate::screens::start(args.listen, args.phone, session, api, &crate::default_web_dir()).await {
             coach.screens = Some(hub);
             servers = tasks;

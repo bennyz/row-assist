@@ -5,44 +5,44 @@ use std::path::PathBuf;
 use analysis::readiness::{HRV_BASELINE_DAYS, Level, WEEK, readiness};
 use anyhow::{Context, Result};
 use clap::Args;
-use store::health::{Samples, aggregate, day_date, list_days, token, upsert_days};
+use store::health::{day_date, list_days, set_source, source};
+use store::paths::health_source_path;
 
 use crate::ctx::{Ctx, today};
 
 #[derive(Args, Debug)]
 pub struct HealthArgs {
-    /// Print the token and address an iPhone Shortcut posts to
-    #[arg(long)]
-    token: bool,
-    /// Import samples from a JSON file in the Shortcut's format
-    #[arg(long)]
-    import: Option<PathBuf>,
+    /// Fetch Watch data from here from now on: your health link on the home
+    /// server, as nutridag's /health command gives it. Restart `rowctl serve`
+    /// (systemctl --user restart row-assist) for it to use the new link
+    #[arg(long, value_name = "LINK")]
+    source: Option<String>,
     #[arg(long)]
     db: Option<PathBuf>,
 }
 
 pub async fn run(args: HealthArgs) -> Result<()> {
-    if args.token {
-        let t = token(&store::paths::token_path())?;
-        println!("Token: {t}");
-        let host = server::tls::lan_ip().map_or("<this computer's address>".to_string(), |ip| ip.to_string());
-        println!("The Shortcut POSTs JSON to http://{host}:8080/api/health/daily");
-        println!("with the header  Authorization: Bearer {t}");
-        println!("Serve on the network for that: rowctl serve --addr 0.0.0.0:8080. Setup: docs/SHORTCUT.md");
-        return Ok(());
-    }
     let ctx = Ctx::open(args.db).await?;
-    if let Some(file) = &args.import {
-        let text = std::fs::read_to_string(file).with_context(|| format!("read {}", file.display()))?;
-        let samples: Samples = serde_json::from_str(&text).context("parse samples")?;
-        let days = aggregate(&samples)?;
-        upsert_days(&ctx.pool, &days).await?;
-        println!("Imported {} days", days.len());
+    if let Some(link) = &args.source {
+        // A link that doesn't work is not kept.
+        let synced = server::health::sync(&ctx.pool, link.trim().trim_end_matches('/'))
+            .await
+            .context("that link didn't give your days")?;
+        set_source(&health_source_path(), link)?;
+        println!("Link saved. It gave {} days.", synced.days);
+    } else if let Some(link) = source(&health_source_path())? {
+        // The same fetch `rowctl serve` makes, here so a failure shows.
+        match server::health::sync(&ctx.pool, &link).await {
+            Ok(synced) => println!("The home server has {} days of yours.", synced.days),
+            Err(e) => println!("Couldn't fetch from the home server ({e:#}); showing what was fetched before."),
+        }
+    } else {
+        println!("No source set: rowctl health --source <your link from nutridag's /health>");
     }
     let today = today();
     let days = list_days(&ctx.pool, today - HRV_BASELINE_DAYS - WEEK).await?;
     if days.is_empty() {
-        println!("No Watch data yet. Set up the Shortcut: rowctl health --token");
+        println!("No Watch data yet.");
         return Ok(());
     }
     println!("{}", line(&ctx).await?);

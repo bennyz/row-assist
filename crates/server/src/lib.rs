@@ -7,7 +7,7 @@
 //!
 //! It listens on the network for the phone, but only this computer sees the
 //! sessions, the Watch data and the row: another device gets the phone's
-//! pages, the camera socket and the token-guarded Watch upload (`local_only`).
+//! pages and the camera socket (`local_only`).
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -19,7 +19,7 @@ use anyhow::{Context, Result};
 use axum::Json;
 use axum::Router;
 use axum::extract::{ConnectInfo, Path as UrlPath, State};
-use axum::http::{Method, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use serde::{Deserialize, Serialize};
@@ -43,43 +43,32 @@ pub struct Config {
     pub db: PathBuf,
     /// The built frontend (`frontend/dist`).
     pub web_dir: PathBuf,
-    /// Accept Watch data posted with this token.
-    pub token: Option<String>,
 }
 
 /// What the JSON API needs.
 #[derive(Clone)]
 pub struct Api {
     pub pool: SqlitePool,
-    /// Posting Watch data needs it; `None` turns posting off.
-    pub token: Option<String>,
-    /// Woken when Watch data arrives (the row runner re-plans).
-    pub health_posted: Option<std::sync::Arc<tokio::sync::Notify>>,
     /// The row `rowctl serve` runs, if any.
     pub row: Option<row::Control>,
 }
 
 impl Api {
-    pub fn new(pool: SqlitePool, token: Option<String>) -> Self {
-        Self {
-            pool,
-            token,
-            health_posted: None,
-            row: None,
-        }
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool, row: None }
     }
 }
 
 impl From<SqlitePool> for Api {
     fn from(pool: SqlitePool) -> Self {
-        Self::new(pool, None)
+        Self::new(pool)
     }
 }
 
 /// Serve review and camera setup (nothing recorded) until Ctrl-C.
 pub async fn serve(cfg: Config) -> Result<()> {
     let pool = store::db::open(&cfg.db).await?;
-    let api = Api::new(pool, cfg.token);
+    let api = Api::new(pool);
     let app = router(Some(api), &cfg.web_dir, Live::setup_only(model::Clock::start()));
     let (addr, task) = listen(cfg.addr, app).await?;
     println!("Row Assist on http://{addr} (Ctrl-C to stop)");
@@ -125,7 +114,6 @@ pub fn router(api: Option<Api>, web_dir: &Path, live: Live) -> Router {
                 .route("/api/health", get(health::get))
                 .route("/api/progress", get(progress::get))
                 .route("/api/today", get(today::get))
-                .route("/api/health/daily", axum::routing::post(health::post))
                 .route("/api/row", get(row::get))
                 .route("/api/row/stop", axum::routing::post(row::stop))
                 .route("/api/row/mark", axum::routing::post(row::mark))
@@ -143,12 +131,10 @@ pub fn router(api: Option<Api>, web_dir: &Path, live: Live) -> Router {
 }
 
 /// What a device other than this computer may reach: the app's files (the
-/// phone needs the camera page), the phone's setup and camera socket, and the
-/// Watch upload, which checks its own token.
-fn open_to_network(method: &Method, path: &str) -> bool {
+/// phone needs the camera page) and the phone's setup and camera socket.
+fn open_to_network(path: &str) -> bool {
     match path {
         "/ws/camera" | "/api/phone" | phone::CA_PATH => true,
-        "/api/health/daily" => method == Method::POST,
         p => !(p.starts_with("/api/") || p.starts_with("/ws/")),
     }
 }
@@ -157,7 +143,7 @@ fn open_to_network(method: &Method, path: &str) -> bool {
 /// directly); the listeners always attach one.
 async fn local_only(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
     let peer = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip().to_canonical());
-    if peer.is_none_or(|ip| ip.is_loopback()) || open_to_network(req.method(), req.uri().path()) {
+    if peer.is_none_or(|ip| ip.is_loopback()) || open_to_network(req.uri().path()) {
         next.run(req).await
     } else {
         (StatusCode::FORBIDDEN, "Only on the computer running Row Assist (open http://localhost:8080 there)").into_response()
@@ -427,8 +413,6 @@ async fn session_detail(
 
 pub enum ApiError {
     NotFound,
-    /// What was wrong with the token, never the token itself.
-    Unauthorized(String),
     BadRequest(String),
     Internal(anyhow::Error),
 }
@@ -443,11 +427,6 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match self {
             Self::NotFound => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "not found"}))).into_response(),
-            Self::Unauthorized(why) => (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": format!("wrong token: {why} (see `rowctl health --token`)")})),
-            )
-                .into_response(),
             Self::BadRequest(m) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": m}))).into_response(),
             Self::Internal(e) => {
                 error!("API: {e:#}");
@@ -466,7 +445,7 @@ mod tests {
     use super::*;
     use analysis::session::Segment;
     use axum::body::{Body, to_bytes};
-    use axum::http::Request;
+    use axum::http::{Method, Request};
     use serde_json::Value;
     use store::sessions::{SessionMeta, save_session};
     use tower::ServiceExt;
@@ -582,7 +561,7 @@ mod tests {
     #[tokio::test]
     async fn another_device_gets_only_the_phone_pages_and_the_watch_upload() {
         let (pool, dir) = fixture("guard").await;
-        let api = Api::new(pool, Some("t0ken-t0ken-t0ken".into()));
+        let api = Api::new(pool);
         let app = router(Some(api), &dir.join("no-frontend"), Live::setup_only(model::Clock::start()));
         let from = |ip: [u8; 4], method: Method, uri: &str| {
             let peer = SocketAddr::from((ip, 50_000));
@@ -596,18 +575,14 @@ mod tests {
         for uri in ["/api/sessions", "/api/health", "/api/today", "/api/row", "/api/phone/qr.svg", "/ws/live"] {
             assert_eq!(status(from(phone, Method::GET, uri)).await, StatusCode::FORBIDDEN, "{uri}");
         }
-        assert_eq!(status(from(phone, Method::GET, "/api/health/daily")).await, StatusCode::FORBIDDEN);
         // The phone's own pages get through (and then 404: no phone, no frontend here).
         assert_eq!(status(from(phone, Method::GET, "/api/phone")).await, StatusCode::NOT_FOUND);
         assert_eq!(status(from(phone, Method::GET, "/phone/camera")).await, StatusCode::NOT_FOUND);
         assert_ne!(status(from(phone, Method::GET, "/ws/camera")).await, StatusCode::FORBIDDEN);
         // What the camera sees is for this machine only.
         assert_eq!(status(from(phone, Method::GET, "/api/camera/still.jpg")).await, StatusCode::FORBIDDEN);
-        assert_eq!(
-            status(from(phone, Method::POST, "/api/health/daily")).await,
-            StatusCode::UNAUTHORIZED,
-            "reaches the token check"
-        );
+        // Nothing takes data from the network: Watch data is fetched, not posted here.
+        assert_eq!(status(from(phone, Method::POST, "/api/health/daily")).await, StatusCode::FORBIDDEN);
         // This computer sees everything.
         assert_eq!(status(from([127, 0, 0, 1], Method::GET, "/api/sessions")).await, StatusCode::OK);
         std::fs::remove_dir_all(&dir).unwrap();
@@ -625,7 +600,7 @@ mod tests {
         };
         let (_state_tx, state) = tokio::sync::watch::channel(rowing.clone());
         let (commands, mut received) = tokio::sync::mpsc::channel(4);
-        let mut api = Api::new(pool.clone(), None);
+        let mut api = Api::new(pool.clone());
         api.row = Some(row::Control { state, commands });
         let app = router(Some(api), &web, Live::setup_only(model::Clock::start()));
 
@@ -658,64 +633,8 @@ mod tests {
         assert_eq!(msg["type"], "row");
         assert_eq!(msg["phase"], "rowing");
 
-        let none = router(Some(Api::new(pool, None)), &web, Live::setup_only(model::Clock::start()));
+        let none = router(Some(Api::new(pool)), &web, Live::setup_only(model::Clock::start()));
         assert_eq!(get(none, "/api/row").await.0, StatusCode::NOT_FOUND);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn watch_data_needs_the_token() {
-        let (pool, dir) = fixture("health").await;
-        let posted = std::sync::Arc::new(tokio::sync::Notify::new());
-        let mut api = Api::new(pool, Some("s3cret-token-0123".into()));
-        api.health_posted = Some(posted.clone());
-        let app = router(Some(api), &dir.join("no-frontend"), Live::setup_only(model::Clock::start()));
-        let today = chrono::Local::now().date_naive();
-        let body = serde_json::json!({
-            "resting_hr": [{"date": today.to_string(), "value": 54}],
-            "hrv": [{"date": format!("{today}T03:00:00+00:00"), "value": 61.5}],
-        })
-        .to_string();
-        let post = |token: Option<&str>, body: String| {
-            let mut req = Request::post("/api/health/daily").header("content-type", "application/json");
-            if let Some(t) = token {
-                req = req.header("authorization", format!("Bearer {t}"));
-            }
-            req.body(Body::from(body)).unwrap()
-        };
-        let status = |res: axum::response::Response| res.status();
-        let refused = |res: axum::response::Response| async move {
-            assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-            let body = axum::body::to_bytes(res.into_body(), 1 << 16).await.unwrap();
-            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["error"].as_str().unwrap().to_string()
-        };
-        let none = refused(app.clone().oneshot(post(None, body.clone())).await.unwrap()).await;
-        assert!(none.contains("no token sent"), "{none}");
-        let short = refused(app.clone().oneshot(post(Some("nope"), body.clone())).await.unwrap()).await;
-        assert!(short.contains("4 characters, the token has 17"), "{short}");
-        assert!(!short.contains("s3cret"), "never the token itself: {short}");
-        // As a phone pastes it: first letter capitalised, quoted, a trailing space.
-        let pasted = Request::post("/api/health/daily")
-            .header("x-row-assist-token", "\"S3cret-token-0123\" ")
-            .body(Body::from(body.clone()))
-            .unwrap();
-        assert_eq!(status(app.clone().oneshot(pasted).await.unwrap()), StatusCode::OK);
-        let lower_bearer = Request::post("/api/health/daily")
-            .header("authorization", "bearer s3cret-token-0123")
-            .body(Body::from(body.clone()))
-            .unwrap();
-        assert_eq!(status(app.clone().oneshot(lower_bearer).await.unwrap()), StatusCode::OK);
-        assert_eq!(status(app.clone().oneshot(post(Some("s3cret-token-0123"), "{".into())).await.unwrap()), StatusCode::BAD_REQUEST);
-        assert_eq!(status(app.clone().oneshot(post(Some("s3cret-token-0123"), body)).await.unwrap()), StatusCode::OK);
-        tokio::time::timeout(std::time::Duration::from_secs(1), posted.notified())
-            .await
-            .expect("the row runner is told");
-
-        let (s, health) = get(app, "/api/health").await;
-        assert_eq!(s, StatusCode::OK);
-        assert_eq!(health["days"][0]["resting_hr"], 54.0);
-        assert_eq!(health["days"][0]["hrv_ms"], 61.5);
-        assert_eq!(health["readiness"]["level"], "unknown", "one day is no baseline");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
