@@ -33,7 +33,7 @@ pub async fn analyze(files: Vec<PathBuf>, all: bool, no_save: bool, db: Option<P
     Ok(())
 }
 
-fn all_recordings() -> Result<Vec<PathBuf>> {
+pub fn all_recordings() -> Result<Vec<PathBuf>> {
     let dir = store::paths::sessions_dir();
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return Ok(Vec::new());

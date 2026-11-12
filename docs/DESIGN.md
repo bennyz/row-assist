@@ -393,6 +393,14 @@ its first 2 strokes: a fault block passes if the focus coach would have cued tha
 clean block if it would have cued nothing, with each fault's flag rate alongside. Suggested
 fixture: 2 min clean, 2 min of one fault, 2 min clean, per fault.
 
+**How the system itself is doing.** Nothing extra is collected for this: a recording holds
+every camera frame, PM5 poll and cue, so any row can be judged again by a later analysis.
+`rowctl report` reads every recording and prints, per row: what the camera delivered (frame
+rate, longest gap, delay from capture to the app, strokes it could read), each fault's rate,
+the median stroke's order beside the good stroke, each cue with its fault's rate before and
+after it was first said, devices that dropped, and the effort and comment the rower left on
+the review screen. That comment is where the rower says the screen was wrong.
+
 ---
 
 ## 6. Effort and fitness
@@ -548,7 +556,7 @@ crates/
   analysis/   stroke records, session summary, zones + TRIMP, reference check, pacing cues;
               later technique, readiness, planner (pure)
   store/      data paths, SQLite (sqlx, migrations), Concept2 CSV importer
-  rowctl/     CLI: record, watch, analyze, sessions, profile, simulate, dump, replay, curves, sequence,
+  rowctl/     CLI: record, watch, analyze, sessions, profile, simulate, dump, replay, curves, sequence, report,
               pm5-probe, import-c2, history
   server/     axum: JSON API, camera and live sockets, phone HTTPS, row state (`/api/row`), the frontend
 frontend/     Svelte 5 + Vite: review (built); later setup, camera (@mediapipe/tasks-vision), live, progress

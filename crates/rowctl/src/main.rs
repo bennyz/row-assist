@@ -18,6 +18,7 @@ mod planning;
 mod probe;
 mod profile;
 mod render;
+mod report;
 mod review;
 mod screens;
 mod simulate;
@@ -65,6 +66,14 @@ enum Command {
     Sequence { file: PathBuf },
     /// Score the fault detectors on a recording with marked blocks
     Check { file: PathBuf },
+    /// How Row Assist itself did on each row: what the camera delivered, the
+    /// faults found, what each cue changed, and what the rower wrote
+    Report {
+        /// Recordings [default: every one in <data>/sessions]
+        files: Vec<PathBuf>,
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
     /// Analyse recordings and save them as sessions
     Analyze {
         files: Vec<PathBuf>,
@@ -179,6 +188,7 @@ async fn main() -> Result<()> {
         Command::Curves { file } => inspect::curves(&file),
         Command::Sequence { file } => inspect::sequence(&file),
         Command::Check { file } => check::run(&file),
+        Command::Report { files, db } => report::run(files, db).await,
         Command::Analyze { files, all, no_save, db } => review::analyze(files, all, no_save, db).await,
         Command::Sessions { db } => review::sessions(db).await,
         Command::Profile(args) => profile::run(args).await,
