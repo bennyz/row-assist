@@ -31,6 +31,8 @@ pub enum FaultArg {
     EarlyArms,
     ShootingSlide,
     ShortCompression,
+    EarlyBody,
+    EarlyKnees,
 }
 
 impl From<FaultArg> for SimFault {
@@ -39,6 +41,8 @@ impl From<FaultArg> for SimFault {
             FaultArg::EarlyArms => Self::EarlyArms,
             FaultArg::ShootingSlide => Self::ShootingSlide,
             FaultArg::ShortCompression => Self::ShortCompression,
+            FaultArg::EarlyBody => Self::EarlyBody,
+            FaultArg::EarlyKnees => Self::EarlyKnees,
         }
     }
 }

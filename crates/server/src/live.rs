@@ -4,8 +4,9 @@
 //! than queueing stale frames.
 
 use analysis::cues::{Rhythm, Targets};
+use analysis::ideal::{Guide, Sequence};
 use analysis::pose::{Angles, Framing};
-use analysis::technique::{CATCH_TRUNK_GUIDE, FINISH_TRUNK_GUIDE, Fault, Figure};
+use analysis::technique::{Fault, Figure, Target};
 use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
@@ -24,16 +25,15 @@ pub fn channel() -> LiveSender {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LiveMsg<'a> {
-    /// Sent to each screen on connect. Guides are body angles in degrees,
-    /// + toward the feet.
-    Hello {
-        live: bool,
-        catch_trunk: (f64, f64),
-        finish_trunk: (f64, f64),
-    },
+    /// Sent to each screen on connect: whether a session is running.
+    Hello { live: bool },
     /// The body in one camera frame: thigh lengths from where the feet rest,
-    /// x toward the feet, y up.
-    Figure { joints: &'a Figure },
+    /// x toward the feet, y up. With it, once the rower's proportions are
+    /// known, the good stroke's body with the handle where theirs is.
+    Figure { joints: &'a Figure, guide: Option<&'a Guide> },
+    /// The good stroke on this rower's body: its catch and finish, and when
+    /// each part moves in it. Every second, like the focus.
+    Target(&'a Target),
     /// A completed stroke.
     Stroke(Box<StrokeMsg<'a>>),
     /// Something the coach said.
@@ -60,7 +60,7 @@ pub struct StrokeMsg<'a> {
     pub rate: Option<f64>,
     pub hr: Option<f64>,
     pub zone: Option<u8>,
-    pub faults: Vec<Fault>,
+    pub faults: Vec<FaultMsg>,
     /// The handle's drive and recovery, seconds, by the camera.
     pub drive_s: Option<f64>,
     pub recovery_s: Option<f64>,
@@ -68,8 +68,23 @@ pub struct StrokeMsg<'a> {
     pub finish: Option<&'a Figure>,
     pub catch_angles: Option<Angles>,
     pub finish_angles: Option<Angles>,
+    /// When the legs, the body and the arms each moved, by the handle.
+    pub sequence: Option<Sequence>,
     pub typical_catch: &'a Figure,
     pub typical_finish: &'a Figure,
+}
+
+/// A fault a stroke showed, and what to do about it.
+#[derive(Debug, Serialize)]
+pub struct FaultMsg {
+    pub fault: Fault,
+    pub cue: &'static str,
+}
+
+impl From<Fault> for FaultMsg {
+    fn from(fault: Fault) -> Self {
+        Self { fault, cue: fault.cue() }
+    }
 }
 
 /// Send to every screen (skipped when none is connected).
@@ -83,12 +98,7 @@ pub fn publish(tx: &LiveSender, msg: &LiveMsg) {
 }
 
 fn hello(live: bool) -> String {
-    serde_json::to_string(&LiveMsg::Hello {
-        live,
-        catch_trunk: CATCH_TRUNK_GUIDE,
-        finish_trunk: FINISH_TRUNK_GUIDE,
-    })
-    .unwrap_or_default()
+    serde_json::to_string(&LiveMsg::Hello { live }).unwrap_or_default()
 }
 
 pub async fn upgrade(ws: WebSocketUpgrade, State(live): State<Live>) -> Response {

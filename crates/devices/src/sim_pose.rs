@@ -19,6 +19,10 @@ pub enum SimFault {
     ShootingSlide,
     /// Doesn't come all the way forward: shins short of vertical at the catch.
     ShortCompression,
+    /// The body swings back from the catch, together with the legs.
+    EarlyBody,
+    /// On the way forward the knees come up at once, with the hands.
+    EarlyKnees,
 }
 
 #[derive(Debug, Clone)]
@@ -55,8 +59,9 @@ const ANKLE: (f64, f64) = (980.0, 170.0);
 const HIP_Y: f64 = 210.0;
 /// Trunk lean at catch (forward) and finish (back), degrees.
 const LEAN: f64 = 25.0;
-/// Height the handle travels at with straight arms (the chain's line).
-const HANDLE_Y: f64 = 230.0;
+/// Height the handle travels at with straight arms (the chain's line): half
+/// a thigh above the hip, as on a real row.
+const HANDLE_Y: f64 = 300.0;
 
 /// Where the rower is in the stroke.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -109,6 +114,7 @@ pub fn figure(phase: Phase, fault: Option<SimFault>) -> [(f64, f64); 9] {
             let (legs, body, arms) = match fault {
                 Some(EarlyArms) => (smooth(d / 0.6), smooth((d - 0.25) / 0.55), smooth((d - 0.05) / 0.6)),
                 Some(ShootingSlide) => (smooth(d / 0.4), smooth((d - 0.45) / 0.45), smooth((d - 0.6) / 0.4)),
+                Some(EarlyBody) => (smooth(d / 0.6), smooth(d / 0.7), smooth((d - 0.55) / 0.45)),
                 _ => (smooth(d / 0.6), smooth((d - 0.25) / 0.55), smooth((d - 0.55) / 0.45)),
             };
             // Shooting the slide: hips run away and the trunk tips further forward.
@@ -116,7 +122,7 @@ pub fn figure(phase: Phase, fault: Option<SimFault>) -> [(f64, f64); 9] {
             (legs, body, arms, lean)
         }
         Phase::Recovery(r) => (
-            1.0 - smooth((r - 0.3) / 0.7),
+            1.0 - smooth(if fault == Some(EarlyKnees) { r } else { (r - 0.3) / 0.7 }),
             1.0 - smooth((r - 0.1) / 0.3),
             1.0 - smooth(r / 0.2),
             0.0,
@@ -187,7 +193,14 @@ mod tests {
         for i in 0..=20 {
             let p = i as f64 / 20.0;
             for phase in [Phase::Drive(p), Phase::Recovery(p)] {
-                for fault in [None, Some(SimFault::EarlyArms), Some(SimFault::ShootingSlide), Some(SimFault::ShortCompression)] {
+                for fault in [
+                    None,
+                    Some(SimFault::EarlyArms),
+                    Some(SimFault::ShootingSlide),
+                    Some(SimFault::ShortCompression),
+                    Some(SimFault::EarlyBody),
+                    Some(SimFault::EarlyKnees),
+                ] {
                     let j = figure(phase, fault);
                     assert!((dist(j[HIP], j[KNEE]) - THIGH).abs() < 1e-6);
                     assert!((dist(j[KNEE], j[ANK]) - SHIN).abs() < 1e-6);

@@ -82,6 +82,11 @@ pub struct LiveArgs {
     /// frequent one in your last 3 sessions)
     #[arg(long, value_enum, default_value_t = FocusArg::Auto)]
     focus: FocusArg,
+    /// Instead of devices: play a recording's events back at their own
+    /// pace, as if they were happening now (with --camera, to watch a past
+    /// row on the row screen)
+    #[arg(long, conflicts_with = "sim")]
+    replay: Option<PathBuf>,
     /// With --sim: also simulate the camera (a stick-figure rower)
     #[arg(long, requires = "sim")]
     sim_camera: bool,
@@ -96,8 +101,10 @@ pub enum FocusArg {
     None,
     ShortCompression,
     ShootingSlide,
+    EarlyBody,
     EarlyArms,
     RushedRecovery,
+    EarlyKnees,
 }
 
 impl FocusArg {
@@ -107,8 +114,10 @@ impl FocusArg {
         let arg = match fault {
             Fault::ShortCompression => Self::ShortCompression,
             Fault::ShootingSlide => Self::ShootingSlide,
+            Fault::EarlyBody => Self::EarlyBody,
             Fault::EarlyArms => Self::EarlyArms,
             Fault::RushedRecovery => Self::RushedRecovery,
+            Fault::EarlyKnees => Self::EarlyKnees,
         };
         arg.to_possible_value().map(|v| v.get_name().to_owned()).unwrap_or_default()
     }
@@ -117,7 +126,7 @@ impl FocusArg {
 impl LiveArgs {
     /// Will strokes have a camera view?
     fn camera_on(&self) -> bool {
-        self.camera || self.phone || self.sim_camera || self.sim_fault.is_some()
+        self.camera || self.phone || self.sim_camera || self.sim_fault.is_some() || self.replay.is_some()
     }
 
     fn setup(&self, focus: Option<Fault>) -> Setup {
@@ -175,6 +184,29 @@ pub fn spawn_devices(d: Devices, clock: Clock, tx: &mpsc::Sender<Event>) -> Vec<
         tasks.push(tokio::spawn(h10::run(clock, tx.clone(), cfg)));
     }
     tasks
+}
+
+/// A recording's events again, at their own pace, moved to now. What the
+/// coach said then is left out: this session's coach speaks for itself.
+async fn replay(events: Vec<Event>, clock: Clock, tx: mpsc::Sender<Event>) {
+    let Some(first) = events.first().map(|e| e.t_us) else { return };
+    let shift = clock.now_us() - first;
+    for mut ev in events {
+        if matches!(ev.kind, EventKind::Cue { .. }) {
+            continue;
+        }
+        ev.t_us += shift;
+        if let EventKind::Pose(p) = &mut ev.kind {
+            p.captured_us += shift;
+        }
+        let wait = ev.t_us - clock.now_us();
+        if wait > 0 {
+            tokio::time::sleep(Duration::from_micros(wait as u64)).await;
+        }
+        if tx.send(ev).await.is_err() {
+            return;
+        }
+    }
 }
 
 /// Heart rate from one source: the strap's own connection when this machine
@@ -248,8 +280,10 @@ async fn choose_focus(args: &LiveArgs, ctx: Option<&Ctx>) -> Option<Fault> {
         FocusArg::None => return None,
         FocusArg::ShortCompression => Fault::ShortCompression,
         FocusArg::ShootingSlide => Fault::ShootingSlide,
+        FocusArg::EarlyBody => Fault::EarlyBody,
         FocusArg::EarlyArms => Fault::EarlyArms,
         FocusArg::RushedRecovery => Fault::RushedRecovery,
+        FocusArg::EarlyKnees => Fault::EarlyKnees,
         FocusArg::Auto => {
             let (fault, r) = ctx?.auto_focus(args.camera_on()).await?;
             println!("Focus picked from your last sessions: {} on {:.0}% of strokes", fault.label(), r * 100.0);
@@ -341,7 +375,8 @@ impl Coach {
         if let Some(hub) = &self.screens
             && let Some(joints) = self.technique.figure(p)
         {
-            live::publish(hub, &LiveMsg::Figure { joints: &joints });
+            let guide = self.technique.guide(&joints);
+            live::publish(hub, &LiveMsg::Figure { joints: &joints, guide: guide.as_ref() });
         }
     }
 
@@ -358,26 +393,31 @@ impl Coach {
                 rate: r.rate(),
                 hr: r.hr_bpm,
                 zone: r.hr_bpm.zip(self.heart.as_ref()).map(|(b, h)| h.zone(b)),
-                faults: r.faults.iter().map(|h| h.fault).collect(),
+                faults: r.faults.iter().map(|h| h.fault.into()).collect(),
                 drive_s: timing.map(|t| t.0 / 1000.0),
                 recovery_s: timing.map(|t| t.1 / 1000.0),
                 catch: pose.map(|p| &p.catch_figure),
                 finish: pose.map(|p| &p.finish_figure),
                 catch_angles: pose.map(|p| p.catch),
                 finish_angles: pose.map(|p| p.finish),
+                sequence: pose.map(|p| p.sequence),
                 typical_catch: &typical_catch,
                 typical_finish: &typical_finish,
             })),
         );
     }
 
-    /// The focus and the targets, for screens that just connected.
+    /// The focus, the targets and the good stroke on this rower's body, for
+    /// screens that just connected (and as the body is measured again).
     pub fn publish_focus(&self) {
         if let Some(hub) = &self.screens {
             let fault = self.focus.as_ref().map(|f| f.focus());
             live::publish(hub, &LiveMsg::Focus { fault, cue: fault.map(|f| f.cue()) });
             let targets = &self.targets;
             live::publish(hub, &LiveMsg::Targets { targets, rhythm: targets.rhythm() });
+            if let Some(target) = self.technique.target() {
+                live::publish(hub, &LiveMsg::Target(&target));
+            }
         }
     }
 
@@ -417,26 +457,21 @@ impl Coach {
 fn spawn_markers(clock: Clock, tx: mpsc::Sender<Event>) {
     use std::io::{BufRead, IsTerminal};
     if std::io::stdin().is_terminal() {
+        let faults: Vec<String> = Fault::ALL.iter().enumerate().map(|(i, f)| format!("{} {}", i + 1, f.label())).collect();
         println!(
-        "Mark what you're rowing on purpose: type a number and Enter. 0 clean, 1 {}, 2 {}, 3 {}, 4 {}. Other text is saved as a note.",
-        Fault::ShortCompression.label(),
-        Fault::ShootingSlide.label(),
-        Fault::EarlyArms.label(),
-        Fault::RushedRecovery.label()
+            "Mark what you're rowing on purpose: type a number and Enter. 0 clean, {}. Other text is saved as a note.",
+            faults.join(", ")
         );
     }
     // A plain thread: reading stdin blocks, and it ends with the process.
     std::thread::spawn(move || {
         for line in std::io::stdin().lock().lines() {
             let Ok(line) = line else { break };
+            let numbered = |n: &str| n.parse::<usize>().ok()?.checked_sub(1).and_then(|i| Fault::ALL.get(i));
             let label = match line.trim() {
                 "" => continue,
                 "0" => analysis::fixtures::CLEAN.to_string(),
-                "1" => Fault::ShortCompression.label().into(),
-                "2" => Fault::ShootingSlide.label().into(),
-                "3" => Fault::EarlyArms.label().into(),
-                "4" => Fault::RushedRecovery.label().into(),
-                other => other.to_string(),
+                other => numbered(other).map_or_else(|| other.to_string(), |f| f.label().to_owned()),
             };
             let ev = Event {
                 t_us: clock.now_us(),
@@ -519,7 +554,14 @@ async fn run(
     pool: Option<store::SqlitePool>,
 ) -> Result<(Option<FileWriter>, u32)> {
     let (tx, mut rx) = mpsc::channel::<Event>(4096);
-    let tasks = spawn_devices(args.devices(), clock, &tx);
+    let tasks = match &args.replay {
+        Some(file) => {
+            let (_, events, _) = recording::read_all(file)?;
+            println!("Replaying {} ({} events)", file.display(), events.len());
+            vec![tokio::spawn(replay(events, clock, tx.clone()))]
+        }
+        None => spawn_devices(args.devices(), clock, &tx),
+    };
     // The camera page's frames join the same stream as the devices'; the
     // mirror follows the session on /ws/live.
     let mut servers = Vec::new();
@@ -690,3 +732,50 @@ fn show<T: ToString>(v: Option<T>) -> String {
     v.map(|v| v.to_string()).unwrap_or_else(|| "–".into())
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_replay_happens_now_at_its_own_pace_without_what_the_coach_said() {
+        // A recording from long ago: 30 ms of it.
+        let then = 1_000_000_000;
+        let mark = |t_us: i64, label: &str| Event {
+            t_us,
+            kind: EventKind::Marker { label: label.into() },
+        };
+        let pose = model::Pose {
+            captured_us: then + 5_000,
+            width: 1280,
+            height: 720,
+            points: Vec::new(),
+        };
+        let events = vec![
+            mark(then, "first"),
+            Event {
+                t_us: then + 10_000,
+                kind: EventKind::Pose(pose),
+            },
+            Event {
+                t_us: then + 15_000,
+                kind: EventKind::Cue { text: "Slow the slide".into() },
+            },
+            mark(then + 30_000, "last"),
+        ];
+        let clock = Clock::start();
+        let (tx, mut rx) = mpsc::channel(8);
+        let before = clock.now_us();
+        replay(events, clock, tx).await;
+        let took = clock.now_us() - before;
+        let got: Vec<Event> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+
+        assert_eq!(got.len(), 3, "the cue is this session's coach's to give");
+        assert!(got[0].t_us >= before, "moved to now");
+        assert_eq!(got[2].t_us - got[0].t_us, 30_000, "spaced as recorded");
+        assert!(took >= 30_000, "and played at that pace: {took} µs");
+        // The camera's frame keeps its place among the PM5's events.
+        let EventKind::Pose(p) = &got[1].kind else { panic!("{:?}", got[1]) };
+        assert_eq!(got[1].t_us - p.captured_us, 5_000);
+    }
+}

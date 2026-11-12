@@ -253,7 +253,8 @@ Ordered by what makes a stroke weak, which is what the baseline points to.
 | 4 | **Rushed recovery** | Recovery/drive < 1.5 at ≤ 24 spm (target ~2:1) | PM5 | "Slow the slide" |
 | 5 | **Catch posture** | Trunk < ~15° forward at catch (no pivot from hips), or over-reach | camera | "Reach from the hips" |
 | 6 | **Finish posture** | Layback > ~30° or < ~5°; wrist far above/below lower ribs | camera | "Sit tall, handle to ribs" |
-| 7 | **Recovery order** | Knee bends before wrist passes the knee | camera | "Hands, body, slide" |
+| 7 | **Recovery order (early knees)** | The knees start up before the hands are away and the body is over | camera | "Hands, body, then slide" |
+| 9 | **Early body** | The body swings back from the catch, instead of after the legs | camera | "Legs, then swing" |
 | 8 | **Force curve shape** | Double hump / mid-drive dip; peak very early or late; low stroke-to-stroke similarity | PM5 | review screen only |
 
 Thresholds start from common coaching norms and are tuned against recorded sessions.
@@ -264,7 +265,12 @@ the handle doesn't, the trunk must tip: cleaner than comparing hip and wrist tra
 handle timing when there is one, else the PM5's (`technique::handle_timing`). The PM5's drive
 time only covers the flywheel speeding up, about half the handle's drive, so its ratio reads
 more than twice the real one. Session drive time and ratio, and the review's, use
-the camera's when it saw most strokes (`Summary::handle_timing`, analysis version 2). Each is tested against the simulator's kinematic rower
+the camera's when it saw most strokes (`Summary::handle_timing`, analysis version 2).
+7 and 9 read off the stroke's **sequence** (§5.4, analysis version 3): 9 = the body has done
+15% of its swing before the handle has come 20% of the drive (the good stroke: about 36%);
+7 = the seat has done 15% of its way forward before the handle has gone 50% of the recovery
+(the good stroke: about 67%). In the fault list they sit where they weaken a stroke: early
+body before early arms, early knees last. Each is tested against the simulator's kinematic rower
 (`rowctl simulate --fault early-arms` etc.): the injected fault is found on > 90% of strokes
 and nothing fires on clean rowing. Real deliberately-rowed fixtures are still to come.
 Every fault has a matching drill (legs-only, pick drill, pause at hands-away, rate ladder).
@@ -310,32 +316,78 @@ The front screen shows the rower's own position, drawn from landmarks (no video 
 `record --camera`), sized to fit one laptop screen read from the erg:
 - **Live figure** drawn from where the feet rest (the median ankle, `LiveTechnique::figure`),
   so it holds still while the seat slides; framed to the rower's own range of movement.
-- **Target rower** behind it (`frontend/src/lib/ghost.js`): a good stroke drawn with the
-  rower's own proportions, measured from the live figures (thigh, shin, trunk, arm lengths,
-  seat and handle heights). Drive: legs, then the body swings from the catch lean to the finish
-  lean (the middles of `CATCH_TRUNK_GUIDE` and `FINISH_TRUNK_GUIDE`), then the arms; recovery:
-  arms, body, then a slow slide to shins vertical. It restarts at each of the rower's catches
-  (the wrist's furthest forward point, found in the live figure itself, so it shares the
-  figure's delay) and runs at the target rhythm (`cues::Rhythm`: a third of the stroke on the
-  drive, 0.8–1.1 s; 1 s + 2 s at rate 20). Ahead of it means rushing; past its own stroke it
-  waits at the catch.
+- **Target body** behind it (§5.4): the good stroke's body with the handle where the rower's
+  is, so every part has somewhere to be at every point of the stroke. A part away from its
+  target is drawn red and heavier; the handle's line carries the good stroke's catch and
+  finish, so a stroke that stops short shows.
+- **Steps**: Legs, Body, Arms, then Arms away, Body over, Slide, with the one the good stroke
+  is in lit.
+- **Now**: the legs, the body and the arms as three bars from catch to finish, each with a
+  tick where it should be, and "early" or "late" beside one that is off.
 - **Rhythm bar**: the target drive and recovery with a marker for now, and the last stroke's,
-  by the camera; "Slow the slide" when the recovery is 0.25 s or more short.
+  by the camera; "Slow the slide" when the recovery is 0.25 s or more short. Timing is only
+  here: the target body moves with the rower, not with the clock.
 - **Numbers against targets** (`LiveMsg::Targets`, every second): rate, watts and heart rate,
   each with its band and which way to go. Heart rate first: "harder" isn't shown while it's
   over the ceiling.
-- Beside it, the last stroke frozen at catch and finish over the median of the last 20 strokes;
-  the coach's cue as a banner; a "Numbers only" switch for the no-feedback blocks. Only figures
-  travel, never video.
+- Beside it, the last stroke: the order it was rowed in (§5.4), and its catch and finish frozen
+  over the median of the last 20 strokes (dropped on a screen under 1000 px high, so the page
+  never scrolls mid-row). Under it, the coach's cue as a banner, else what the last stroke
+  showed with what to do about each ("Early body: Legs, then swing"); a "Numbers only" switch
+  for the no-feedback blocks. Only figures travel, never video.
 
-**Validation:** each fault detector ships with a recorded session where the fault is rowed
+### 5.4 The good stroke, position by position
+
+Built in `analysis::ideal`. The aim: at every point of the stroke, see where the body is and
+where it should be. A correction after the fact ("early arms") doesn't say where the arms
+should have been, or when.
+
+- **Three parts.** A stroke is the legs, the body and the arms, each going from its catch
+  position (0) to its finish position (1): the seat along the rail, the body's lean, the
+  elbow's bend. The good stroke is an order (`ideal::path`). Drive: the legs; the body from
+  when they are half down; the arms once they are down. Recovery: the arms; the body close
+  behind; the knees only once the hands are away and the body is nearly over.
+- **Matched by the handle, not by the clock.** For a live frame, the target is the good
+  stroke's body with its hands where the rower's are (`Body::progress` inverts the handle's
+  position along the path; `LiveTechnique::guide`). It holds at any speed and standing still:
+  stop anywhere in the stroke and the target shows the right position for that point. A target
+  that runs on time (the first version restarted a 3 s stroke at each catch) differs in every
+  joint as soon as the rower's timing differs, so it can't say whether the shape is right.
+  Which half of the stroke is under way comes from the handle too: it turns round at the catch
+  and the finish (`ideal::Direction`, 0.2 thigh lengths of hysteresis).
+- **On the rower's own body.** Segment lengths, seat and handle heights are measured from
+  their figures (`Body::measure`): before the first stroke from the last 4 s, every second, so
+  the target is there to sit and move against; then from each stroke's rowing frames. Catch:
+  shins vertical. Finish: knees at 172°, the handle just in front of the body. The target
+  leans at the catch and the finish as the rower did at their last one, held inside the guides
+  (15–30° forward, 5–30° back): what is left to see is the order, not a difference in style.
+  The handle is drawn level at its median height.
+- **Off** is a part more than 0.2 of its travel from its target (0.25 for the arms: an
+  elbow's angle moves a long way for a small move of the hands near straight). Because the
+  hands are matched, one part early shows with another late: a body that swings from the catch
+  reads ahead with the legs as far behind.
+- **Sequence.** Each stroke stores when each part moved (`StrokePose::sequence`): the share of
+  the handle's travel at which it had done 15% and 85% of its own movement that stroke, for
+  the drive and for the recovery. Measured on the stroke's own range, so a short stroke in the
+  right order reads like a long one, and a part that hardly moved (a drill) has no span. The
+  row screen and the review draw it over the good stroke's (`technique::target_sequence`) as
+  bars, in the order the parts should go: a good stroke steps down like stairs. `rowctl
+  sequence <file>` prints it per stroke.
+- **Seeing a past row again:** `rowctl watch --replay <file> --camera` plays a recording back
+  at its own pace onto the row screen.
+- The simulator's handle runs half a thigh above the hip, as a real one does (it was at hip
+  height, which no arm reaches with the body upright).
+
+### 5.5 Validation
+
+Each fault detector ships with a recorded session where the fault is rowed
 *on purpose* (e.g., 20 strokes bending the arms early). The detector must flag those strokes
 and stay quiet on clean ones.
 
 **Built:** on the row screen, "Mark faults on purpose…" opens a button per block (Clean, or
-one of the four faults); press one as each block starts. A mark before the first stroke
-starts the row with it. During `rowctl record`, type `0` (clean) or `1`–`4` (short
-compression, shooting the slide, early arms, rushed recovery) + Enter instead. Either way
+one of the six faults); press one as each block starts. A mark before the first stroke
+starts the row with it. During `rowctl record`, type `0` (clean) or `1`–`6` (the faults in
+`Fault::ALL` order; it prints the list) + Enter instead. Either way
 they're stored as `Marker` events. `rowctl check <file>` scores every block (`analysis::fixtures`), skipping
 its first 2 strokes: a fault block passes if the focus coach would have cued that fault, a
 clean block if it would have cued nothing, with each fault's flag rate alongside. Suggested
@@ -496,7 +548,7 @@ crates/
   analysis/   stroke records, session summary, zones + TRIMP, reference check, pacing cues;
               later technique, readiness, planner (pure)
   store/      data paths, SQLite (sqlx, migrations), Concept2 CSV importer
-  rowctl/     CLI: record, watch, analyze, sessions, profile, simulate, dump, replay, curves,
+  rowctl/     CLI: record, watch, analyze, sessions, profile, simulate, dump, replay, curves, sequence,
               pm5-probe, import-c2, history
   server/     axum: JSON API, camera and live sockets, phone HTTPS, row state (`/api/row`), the frontend
 frontend/     Svelte 5 + Vite: review (built); later setup, camera (@mediapipe/tasks-vision), live, progress
@@ -525,10 +577,10 @@ Each phase ends with something usable on the erg.
 |---|---|---|
 | **0. Foundations** | workspace; event model; PM5 driver port + drag factor + **force curve spike**; H10 HR + RR; recorder, replay, dump; Concept2 CSV importer | a real row is recorded, replayed, and its force curves dumped; the CSV is in SQLite. *Status: code done and verified with the simulator; CSV imported. Waiting on hardware: `pm5-probe`, then a real `record`.* |
 | **1. Effort** | stroke assembler; session persistence; zones, TRIMP, EF, decoupling, watts at 20; drag-factor check; review screen; audio zone cues; reference-row comparison | comeback-ramp sessions are rowed with the app. *Status: built: `rowctl record --plan … --speak`, `analyze`, `sessions`, `profile`, `simulate`, and the review screen (`rowctl serve`). Waiting on the first real comeback-ramp rows.* |
-| **2. Posture** | camera page; framing check; near-side + horizon + scale; sync auto-calibration; joint angles; faults 1–4; one-focus coach; **mirror on the front screen**; deliberate-fault fixtures | the coach flags deliberately rowed faults and stays quiet on clean strokes. *Status: built: camera page (`rowctl record --camera`), setup check, near side, tilt, scale, sync, joint angles, faults 1–4, technique on the review screen, the one-focus coach (live), a kinematic rower in the simulator (`--sim-fault`). the mirror on the front screen. Next: real deliberately-rowed fixtures and threshold tuning, which need rows on the erg.* |
+| **2. Posture** | camera page; framing check; near-side + horizon + scale; sync auto-calibration; joint angles; faults 1–4; one-focus coach; **mirror on the front screen**; deliberate-fault fixtures | the coach flags deliberately rowed faults and stays quiet on clean strokes. *Status: built: camera page (`rowctl record --camera`), setup check, near side, tilt, scale, sync, joint angles, faults 1–4, technique on the review screen, the one-focus coach (live), a kinematic rower in the simulator (`--sim-fault`), the mirror on the front screen, and the good stroke position by position (§5.4: the target body by the handle, each stroke's sequence, faults 7 and 9). Next: real deliberately-rowed fixtures and threshold tuning, which need rows on the erg.* |
 | **3. Readiness** | Shortcut endpoint; baselines; readiness on setup screen; Karvonen zones from Watch resting HR | a week of Watch data shows up and changes the zones. *Status: built and tested with synthetic data; waiting on the Shortcut (docs/SHORTCUT.md).* |
 | **4. Improvement loop** | planner; PM5 workout programming; progress screen; form under fatigue; benchmarks | the app proposes next session + focus and loads it onto the PM5. *Status: planner + benchmark scheduling (`rowctl plan`) and the progress screen built; PM5 programming needs hardware.* |
-| **Later** | H10 accelerometer; faults 5–8; front camera view (symmetry); optional video capture for review; Concept2 Logbook API sync (incl. stroke data if present); weekly written summary | — |
+| **Later** | H10 accelerometer; faults 5, 6 and 8; front camera view (symmetry); optional video capture for review; Concept2 Logbook API sync (incl. stroke data if present); weekly written summary | — |
 
 ---
 

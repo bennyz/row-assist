@@ -3,6 +3,7 @@
 
 pub mod cues;
 pub mod fixtures;
+pub mod ideal;
 pub mod metrics;
 pub mod planner;
 pub mod progress;

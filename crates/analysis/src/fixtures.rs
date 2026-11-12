@@ -1,4 +1,4 @@
-//! Deliberate-fault fixtures (DESIGN.md §5.3, validation): rows where faults
+//! Deliberate-fault fixtures (DESIGN.md §5.5): rows where faults
 //! are made on purpose and marked as they start, to check that each detector
 //! flags its fault and that the coach stays quiet on clean rowing.
 

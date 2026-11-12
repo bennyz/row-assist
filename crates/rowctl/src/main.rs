@@ -60,6 +60,9 @@ enum Command {
     },
     /// Show every stroke's force curve and timing in a recording
     Curves { file: PathBuf },
+    /// Show the order every stroke in a recording was rowed in: when the
+    /// legs, the body and the arms moved, against the good stroke
+    Sequence { file: PathBuf },
     /// Score the fault detectors on a recording with marked blocks
     Check { file: PathBuf },
     /// Analyse recordings and save them as sessions
@@ -174,6 +177,7 @@ async fn main() -> Result<()> {
         Command::Dump { file } => inspect::dump(&file),
         Command::Replay { file, speed } => inspect::replay(&file, speed).await,
         Command::Curves { file } => inspect::curves(&file),
+        Command::Sequence { file } => inspect::sequence(&file),
         Command::Check { file } => check::run(&file),
         Command::Analyze { files, all, no_save, db } => review::analyze(files, all, no_save, db).await,
         Command::Sessions { db } => review::sessions(db).await,

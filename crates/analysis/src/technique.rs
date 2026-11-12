@@ -1,5 +1,5 @@
 //! Technique per stroke: the camera's view of each stroke lined up with the
-//! PM5's, and the faults it shows (DESIGN.md §5.1, faults 1–4).
+//! PM5's, and the faults it shows (DESIGN.md §5.1, faults 1–4, 7 and 9).
 //!
 //! Thresholds start from common coaching norms and are to be tuned on
 //! deliberately-rowed recordings.
@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 use model::{Event, EventKind, Pose};
 use serde::{Deserialize, Serialize};
 
+use crate::ideal::{Body, Direction, Guide, Phase, Sample, Sequence, sample, spans};
 use crate::pose::{Angles, Joint, Side, angles, camera_tilt, has_pose, joint, near_side, thigh_px};
 use crate::strokes::StrokeRecord;
 
@@ -29,8 +30,15 @@ pub const EARLY_ARMS_ELBOW_DEG: f64 = 160.0;
 pub const LEGS_DOWN_KNEE_DEG: f64 = 150.0;
 pub const RUSHED_RATIO: f64 = 1.5;
 pub const RUSHED_MAX_SPM: f64 = 24.0;
-/// Body angle the mirror's guides show (degrees, + toward the feet): forward
-/// at the catch, back at the finish (DESIGN.md §5.1, faults 5 and 6).
+/// The body has started to swing back before the handle has come this share
+/// of the drive: the good stroke's body waits until about a third.
+pub const EARLY_BODY_START: f64 = 0.2;
+/// The knees have started up before the handle has gone this share of the
+/// way forward: the good stroke's wait until about two thirds.
+pub const EARLY_KNEES_START: f64 = 0.5;
+/// Body angle a good stroke keeps to (degrees, + toward the feet): forward
+/// at the catch, back at the finish (DESIGN.md §5.1, faults 5 and 6). The
+/// mirror's target leans as the rower does, held inside these.
 pub const CATCH_TRUNK_GUIDE: (f64, f64) = (15.0, 30.0);
 pub const FINISH_TRUNK_GUIDE: (f64, f64) = (-30.0, -5.0);
 
@@ -41,21 +49,35 @@ pub enum Fault {
     ShortCompression,
     /// Seat moves before the handle: the trunk tips forward early in the drive.
     ShootingSlide,
+    /// The body swings back from the catch, instead of after the legs.
+    EarlyBody,
     /// Arms bend while the legs are still driving.
     EarlyArms,
     /// Recovery under 1.5× the drive at a steady rate.
     RushedRecovery,
+    /// Knees come up before the hands are away and the body is over.
+    EarlyKnees,
 }
 
 impl Fault {
-    pub const ALL: [Fault; 4] = [Fault::ShortCompression, Fault::ShootingSlide, Fault::EarlyArms, Fault::RushedRecovery];
+    /// In the order they weaken a stroke.
+    pub const ALL: [Fault; 6] = [
+        Fault::ShortCompression,
+        Fault::ShootingSlide,
+        Fault::EarlyBody,
+        Fault::EarlyArms,
+        Fault::RushedRecovery,
+        Fault::EarlyKnees,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::ShortCompression => "short compression",
             Self::ShootingSlide => "shooting the slide",
+            Self::EarlyBody => "early body",
             Self::EarlyArms => "early arms",
             Self::RushedRecovery => "rushed recovery",
+            Self::EarlyKnees => "early knees",
         }
     }
 
@@ -64,8 +86,10 @@ impl Fault {
         match self {
             Self::ShortCompression => "Get to full compression",
             Self::ShootingSlide => "Handle moves with the seat",
+            Self::EarlyBody => "Legs, then swing",
             Self::EarlyArms => "Legs first, arms long",
             Self::RushedRecovery => "Slow the slide",
+            Self::EarlyKnees => "Hands, body, then slide",
         }
     }
 
@@ -74,8 +98,10 @@ impl Fault {
         match self {
             Self::ShortCompression => "short-compression",
             Self::ShootingSlide => "shooting-slide",
+            Self::EarlyBody => "early-body",
             Self::EarlyArms => "early-arms",
             Self::RushedRecovery => "rushed-recovery",
+            Self::EarlyKnees => "early-knees",
         }
     }
 
@@ -130,6 +156,8 @@ pub struct StrokePose {
     /// The body at catch and finish, levelled.
     pub catch_figure: Figure,
     pub finish_figure: Figure,
+    /// When the legs, the body and the arms each moved, by the handle.
+    pub sequence: Sequence,
 }
 
 /// How long the handle took, by the camera: `(drive, recovery)` in ms, from
@@ -318,6 +346,25 @@ pub fn stroke_pose(stroke: &StrokeRecord, frames: &[Pose], view: &CameraView) ->
         .filter(|a| a.knee.is_some_and(|k| k < LEGS_DOWN_KNEE_DEG))
         .filter_map(|a| a.elbow)
         .reduce(f64::min);
+    // The three parts frame by frame: the drive, then the recovery up to
+    // where this stroke's frames end, just short of the next catch.
+    let through = |range: std::ops::Range<usize>| -> Vec<Sample> {
+        range
+            .filter_map(|i| {
+                let a = ang(i);
+                Some(Sample {
+                    handle: reach(&frames[i], view)? / view.thigh_px,
+                    seat: at(&frames[i], view, Joint::Hip)?.0 * view.facing / view.thigh_px,
+                    lean: a.trunk?,
+                    elbow: a.elbow?,
+                })
+            })
+            .collect()
+    };
+    let sequence = Sequence {
+        drive: spans(&through(catch_i..finish_i + 1)),
+        recovery: spans(&through(finish_i..hi)),
+    };
 
     Some(StrokePose {
         frames: (hi - lo) as u32,
@@ -329,6 +376,7 @@ pub fn stroke_pose(stroke: &StrokeRecord, frames: &[Pose], view: &CameraView) ->
         elbow_while_legs_bent,
         catch_figure: figure(&frames[catch_i], view),
         finish_figure: figure(&frames[finish_i], view),
+        sequence,
     })
 }
 
@@ -343,8 +391,14 @@ pub fn faults(stroke: &StrokeRecord, pose: Option<&StrokePose>) -> Vec<FaultHit>
         if let Some(gain) = p.early_trunk_gain.filter(|&g| g > SHOOTING_TRUNK_GAIN_DEG) {
             hit(Fault::ShootingSlide, gain);
         }
+        if let Some(body) = p.sequence.drive.body.filter(|b| b.start < EARLY_BODY_START) {
+            hit(Fault::EarlyBody, body.start);
+        }
         if let Some(elbow) = p.elbow_while_legs_bent.filter(|&e| e < EARLY_ARMS_ELBOW_DEG) {
             hit(Fault::EarlyArms, elbow);
+        }
+        if let Some(legs) = p.sequence.recovery.legs.filter(|l| l.start < EARLY_KNEES_START) {
+            hit(Fault::EarlyKnees, legs.start);
         }
     }
     let ratio = handle_timing(stroke, pose).map(|(drive, recovery)| recovery / drive).or(stroke.ratio);
@@ -372,12 +426,26 @@ pub struct LiveTechnique {
     rowing_from_us: Option<i64>,
     /// Where the feet rest: the live figure is drawn from here, so it holds still.
     feet: Option<(f64, f64)>,
+    /// Frames taken in so far.
+    seen: usize,
+    /// The good stroke on this rower's body, once enough of them is seen.
+    body: Option<Body>,
+    direction: Direction,
+    /// The body's lean with the handle at its furthest so far this phase,
+    /// and at the last catch and the last finish.
+    turn_lean: Option<f64>,
+    catch_lean: Option<f64>,
+    finish_lean: Option<f64>,
 }
 
 /// Strokes the live typical figure is the median of.
 const LIVE_TYPICAL: usize = 20;
-/// Frames needed before the first camera view (side, scale) is worked out.
+/// Before the first stroke, the camera view (side, scale), where the feet
+/// are and the rower's proportions are worked out again every this many
+/// frames, from the last `SETTLING_US`: someone walking up and sitting down
+/// is on the screen, to scale, a few seconds after they sit.
 const FIRST_VIEW_FRAMES: usize = 30;
+const SETTLING_US: i64 = 4_000_000;
 
 /// Frames kept: several strokes, enough for side, tilt and scale.
 const LIVE_BUFFER_US: i64 = 15_000_000;
@@ -399,12 +467,69 @@ impl LiveTechnique {
             self.frames.pop_front();
         }
         // Before the first stroke, a view from the frames alone, for the
-        // mirror: side and scale, but no tilt, which only rowing shows.
-        if self.view.is_none() && self.frames.len() >= FIRST_VIEW_FRAMES {
+        // mirror: side and scale, but no tilt, which only rowing shows. From
+        // the first stroke on, each stroke works them out from the rowing.
+        self.seen += 1;
+        if self.strokes == 0 && self.seen.is_multiple_of(FIRST_VIEW_FRAMES) {
             let frames = self.frames.make_contiguous();
-            self.view = camera_view(frames).map(|v| CameraView { tilt_deg: 0.0, ..v });
-            self.feet = self.view.as_ref().and_then(|v| feet(frames, v));
+            let recent = &frames[first_at(frames, newest - SETTLING_US)..];
+            if let Some(v) = camera_view(recent) {
+                self.feet = feet(recent, &v);
+                self.view = Some(CameraView { tilt_deg: 0.0, ..v });
+                self.measure_body(newest - SETTLING_US);
+            }
         }
+    }
+
+    /// The rower's proportions from the frames since `from_us`.
+    fn measure_body(&mut self, from_us: i64) {
+        let (Some(v), Some(origin)) = (&self.view, self.feet) else { return };
+        let figures: Vec<Figure> = self
+            .frames
+            .iter()
+            .filter(|f| f.captured_us >= from_us)
+            .step_by(2)
+            .map(|f| figure_from(f, v, origin))
+            .collect();
+        if let Some(mut body) = Body::measure(&figures) {
+            body.set_lean(self.catch_lean, self.finish_lean);
+            self.body = Some(body);
+        }
+    }
+
+    /// A live figure against the good stroke: the target body with the
+    /// handle where the rower's is, and where each part should be. The
+    /// target leans at the catch and the finish as the rower last did
+    /// (within the guides), so through the stroke it differs only in the
+    /// order the parts move.
+    pub fn guide(&mut self, figure: &Figure) -> Option<Guide> {
+        let s = sample(figure)?;
+        let moved = self.direction.push(s.handle);
+        if moved.turned {
+            match moved.phase {
+                Phase::Drive => self.catch_lean = self.turn_lean,
+                Phase::Recovery => self.finish_lean = self.turn_lean,
+            }
+            if let Some(body) = &mut self.body {
+                body.set_lean(self.catch_lean, self.finish_lean);
+            }
+        }
+        if moved.furthest || moved.turned {
+            self.turn_lean = Some(s.lean);
+        }
+        self.body.as_ref()?.guide(moved.phase, figure)
+    }
+
+    /// The good stroke on this rower: its catch and finish, and when each
+    /// part moves in it.
+    pub fn target(&self) -> Option<Target> {
+        let body = self.body.as_ref()?;
+        let (catch, finish) = body.ends();
+        Some(Target {
+            catch,
+            finish,
+            sequence: body.sequence(),
+        })
     }
 
     /// A frame's body as the mirror draws it, once the camera view is known:
@@ -473,7 +598,41 @@ impl LiveTechnique {
             }
             self.recent.push_back(p.clone());
         }
+        self.measure_body(from);
     }
+}
+
+/// The good stroke on one rower's body.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Target {
+    pub catch: Figure,
+    pub finish: Figure,
+    pub sequence: Sequence,
+}
+
+/// The good stroke's order for the rower of these strokes, from their
+/// catches and finishes: what the review holds each stroke's sequence
+/// against. `None` without enough strokes the camera saw.
+pub fn target_sequence(strokes: &[StrokeRecord]) -> Option<Sequence> {
+    let poses: Vec<&StrokePose> = strokes.iter().filter_map(|s| s.pose.as_ref()).collect();
+    // Stored figures are from the hip; the body is measured from the feet.
+    let from_feet = |f: &Figure| -> Option<Figure> {
+        let [ax, ay] = f.get(Joint::Ankle as usize).copied().flatten()?;
+        Some(f.iter().map(|p| p.map(|[x, y]| [x - ax, y - ay])).collect())
+    };
+    let figures: Vec<Figure> = poses
+        .iter()
+        .flat_map(|p| [&p.catch_figure, &p.finish_figure])
+        .filter_map(from_feet)
+        .collect();
+    let median = |pick: fn(&StrokePose) -> Option<f64>| {
+        let mut xs: Vec<f64> = poses.iter().filter_map(|p| pick(p)).collect();
+        xs.sort_by(f64::total_cmp);
+        xs.get(xs.len() / 2).copied()
+    };
+    let mut body = Body::measure(&figures)?;
+    body.set_lean(median(|p| p.catch.trunk), median(|p| p.finish.trunk));
+    Some(body.sequence())
 }
 
 /// How often each fault showed up.
@@ -614,6 +773,8 @@ mod tests {
             (SimFault::ShortCompression, Fault::ShortCompression),
             (SimFault::ShootingSlide, Fault::ShootingSlide),
             (SimFault::EarlyArms, Fault::EarlyArms),
+            (SimFault::EarlyBody, Fault::EarlyBody),
+            (SimFault::EarlyKnees, Fault::EarlyKnees),
         ] {
             let (strokes, _) = row(Some(sim), 0.33);
             assert!(rate(&strokes, fault) > 0.9, "{fault:?}: {}", rate(&strokes, fault));
@@ -701,6 +862,105 @@ mod tests {
         let a = crate::analyze(&events, None);
         let view = a.summary.unwrap().camera.unwrap();
         assert!(view.tilt_deg.abs() < 0.5, "only rowing counts: {}", view.tilt_deg);
+    }
+
+    /// What the mirror would have shown through a simulated row: every
+    /// frame's guide, from the first stroke's end on.
+    fn guides(fault: Option<SimFault>) -> (Vec<Guide>, LiveTechnique) {
+        let cfg = SimConfig {
+            pose: Some(PoseSim {
+                fault,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut live = LiveTechnique::new();
+        let mut asm = crate::strokes::StrokeAssembler::new();
+        let mut strokes = 0;
+        let mut out = Vec::new();
+        for ev in &generate(cfg, T0, Duration::from_secs(40)) {
+            if let EventKind::Pose(p) = &ev.kind {
+                live.frame(p);
+                let guide = live.figure(p).and_then(|f| live.guide(&f));
+                if strokes >= 2 {
+                    out.push(guide.expect("a guide for every frame once rowing"));
+                }
+            }
+            if let Some(mut s) = asm.push(ev) {
+                live.stroke(&mut s);
+                strokes += 1;
+            }
+        }
+        (out, live)
+    }
+
+    #[test]
+    fn the_live_target_follows_a_clean_stroke_and_shows_what_is_off() {
+        use crate::ideal::{Off, Phase, Step};
+        let (clean, live) = guides(None);
+        assert!(clean.len() > 600);
+        let off = clean.iter().filter(|g| g.off != Off::default()).count();
+        assert_eq!(off, 0, "nothing off on a clean stroke");
+        // Every step of the stroke comes up, in order.
+        let mut steps: Vec<Step> = clean.iter().map(|g| g.step).collect();
+        steps.dedup();
+        use Step::*;
+        let cycle = [Legs, Body, Arms, ArmsAway, BodyOver, Slide];
+        let start = cycle.iter().position(|s| *s == steps[0]).unwrap();
+        for (i, s) in steps.iter().enumerate() {
+            assert_eq!(*s, cycle[(start + i) % 6], "step {i} of {steps:?}");
+        }
+        assert!(steps.len() >= 6 * 8, "{} steps in 10 strokes", steps.len());
+        // The target is the simulator's rower: catch with the shins vertical.
+        let t = live.target().unwrap();
+        let (knee, ankle) = (t.catch[Joint::Knee as usize].unwrap(), t.catch[Joint::Ankle as usize].unwrap());
+        assert!((knee[0] - ankle[0]).abs() < 0.05, "knee {knee:?} over ankle {ankle:?}");
+        assert!(t.sequence.drive.arms.unwrap().start > t.sequence.drive.body.unwrap().start);
+
+        // Arms bent from the catch: off through the leg drive, on every stroke.
+        let (early, _) = guides(Some(SimFault::EarlyArms));
+        let arms_off = |g: &&Guide| g.phase == Phase::Drive && g.off.arms && g.you.arms > g.ideal.arms;
+        assert!(early.iter().filter(arms_off).count() > 60, "{}", early.iter().filter(arms_off).count());
+        // Knees up with the hands: the legs are ahead on the way forward. With
+        // the handle matched that is a few centimetres of seat, so it shows
+        // for a moment each stroke (the stroke's own sequence shows it whole).
+        let (knees, _) = guides(Some(SimFault::EarlyKnees));
+        let legs_off = |g: &&Guide| g.phase == Phase::Recovery && g.off.legs && g.you.legs < g.ideal.legs;
+        assert!(knees.iter().filter(legs_off).count() >= 10, "{}", knees.iter().filter(legs_off).count());
+    }
+
+    #[test]
+    fn the_target_is_there_before_the_first_stroke() {
+        // Sitting at the catch, not rowing: a few seconds of the same frame.
+        let joints = devices::sim_pose::figure(devices::sim_pose::Phase::Drive(0.0), None);
+        let mut live = LiveTechnique::new();
+        let mut guide = None;
+        for i in 0..150 {
+            let p = devices::sim_pose::pose_frame(T0 + i * 33_333, joints, || 0.0);
+            live.frame(&p);
+            guide = live.figure(&p).and_then(|f| live.guide(&f));
+        }
+        let g = guide.expect("a target to sit against");
+        assert!(g.ideal.legs < 0.05 && g.ideal.body < 0.05 && g.ideal.arms < 0.05, "at the catch: {:?}", g.ideal);
+        assert_eq!(g.off, crate::ideal::Off::default());
+    }
+
+    #[test]
+    fn the_review_gets_the_good_stroke_s_order_from_stored_strokes() {
+        let (strokes, _) = row(None, 0.33);
+        let target = target_sequence(&strokes).unwrap();
+        let mine = strokes[10].pose.as_ref().unwrap().sequence;
+        for (name, mine, target) in [
+            ("body", mine.drive.body, target.drive.body),
+            ("arms", mine.drive.arms, target.drive.arms),
+            ("knees", mine.recovery.legs, target.recovery.legs),
+        ] {
+            let (mine, target) = (mine.unwrap(), target.unwrap());
+            assert!((mine.start - target.start).abs() < 0.12, "{name}: starts at {:.2}, target {:.2}", mine.start, target.start);
+        }
+        // Too few strokes seen to measure a body from.
+        assert_eq!(target_sequence(&strokes[..5]), None);
+        assert_eq!(target_sequence(&[]), None);
     }
 
     #[test]

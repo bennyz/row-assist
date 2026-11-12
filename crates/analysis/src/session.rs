@@ -11,7 +11,9 @@ use crate::zones::{HeartProfile, HeartStats, heart_stats};
 /// recomputed from their recordings.
 /// 2: camera tilt from rowing frames only; drive time and ratio from the
 /// camera's handle timing when there is a camera.
-pub const ANALYSIS_VERSION: u32 = 2;
+/// 3: each stroke's sequence (when the legs, the body and the arms moved),
+/// and the faults read from it: early body, early knees.
+pub const ANALYSIS_VERSION: u32 = 3;
 
 /// A catch-to-catch time longer than this (under 10 spm) is a pause, not a stroke.
 pub const MAX_CYCLE_S: f64 = 6.0;

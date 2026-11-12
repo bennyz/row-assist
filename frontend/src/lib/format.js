@@ -98,12 +98,35 @@ export function nearest(items, key, v) {
   return Math.abs(items[hi]?.[key] - v) < Math.abs(items[lo]?.[key] - v) ? hi : lo;
 }
 
-/** Fault names as the review screen shows them (keys match analysis::technique::Fault). */
+/**
+ * Fault names as the review screen shows them (keys match
+ * analysis::technique::Fault, in its order). `at` is the phase and part of
+ * the stroke's sequence the fault shows in.
+ */
 export const FAULTS = {
   short_compression: { label: 'Short compression', short: 'compression' },
-  shooting_slide: { label: 'Shooting the slide', short: 'slide' },
-  early_arms: { label: 'Early arms', short: 'arms' },
+  shooting_slide: { label: 'Shooting the slide', short: 'slide', at: ['drive', 'legs'] },
+  early_body: { label: 'Early body', short: 'body', at: ['drive', 'body'] },
+  early_arms: { label: 'Early arms', short: 'arms', at: ['drive', 'arms'] },
   rushed_recovery: { label: 'Rushed recovery', short: 'rushed' },
+  early_knees: { label: 'Early knees', short: 'knees', at: ['recovery', 'legs'] },
+};
+
+/** The three parts of a stroke (keys match analysis::ideal::Parts). */
+export const PARTS = { legs: 'Legs', body: 'Body', arms: 'Arms' };
+
+/** The steps of a stroke, in order (keys match analysis::ideal::Step). */
+export const STEPS = {
+  drive: [
+    ['legs', 'Legs'],
+    ['body', 'Body'],
+    ['arms', 'Arms'],
+  ],
+  recovery: [
+    ['arms_away', 'Arms away'],
+    ['body_over', 'Body over'],
+    ['slide', 'Slide'],
+  ],
 };
 
 export const faultList = (hits, form = 'label') =>

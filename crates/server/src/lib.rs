@@ -292,6 +292,9 @@ pub struct SessionDetail {
     /// The session's median catch and finish figures (empty without a camera).
     pub typical_catch: Figure,
     pub typical_finish: Figure,
+    /// When each part moves in the good stroke, on this rower's body: what
+    /// each stroke's own sequence is held against (camera sessions).
+    pub target_sequence: Option<analysis::ideal::Sequence>,
     /// EF against past steady pieces at similar power (steady rows of 15+ min).
     pub reference: Option<ReferenceView>,
 }
@@ -416,6 +419,7 @@ async fn session_detail(
         zones,
         typical_catch,
         typical_finish,
+        target_sequence: technique::target_sequence(&strokes),
         reference,
         summary: row.summary,
     }))
@@ -782,7 +786,6 @@ mod tests {
             for ws in [&mut a, &mut b] {
                 let hello = next_json(ws).await;
                 assert_eq!((hello["type"].as_str(), hello["live"].as_bool()), (Some("hello"), Some(true)));
-                assert_eq!(hello["catch_trunk"][0], 15.0);
             }
             crate::live::publish(&hub, &crate::live::LiveMsg::Cue { text: "Legs first, arms long" });
             for ws in [&mut a, &mut b] {

@@ -1,9 +1,10 @@
-//! `dump`, `replay` and `curves`: read recordings back.
+//! `dump`, `replay`, `curves` and `sequence`: read recordings back.
 
 use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::Duration;
 
+use analysis::ideal::{Sequence, Span, Spans};
 use analysis::strokes::drive_curves;
 use anyhow::{Result, bail};
 use recording::Reader;
@@ -86,6 +87,55 @@ pub fn curves(file: &Path) -> Result<()> {
     }
     if truncated {
         eprintln!("{TRUNCATED}");
+    }
+    Ok(())
+}
+
+/// One part's span over a phase as a bar: `·` before it starts, `█` while it
+/// does most of its moving, `▒` for its last 15%.
+fn span_bar(span: Option<Span>, width: usize) -> String {
+    let Some(s) = span else { return "–".repeat(width) };
+    (0..width)
+        .map(|i| {
+            let at = (i as f64 + 0.5) / width as f64;
+            if at < s.start {
+                '·'
+            } else if at <= s.end {
+                '█'
+            } else {
+                '▒'
+            }
+        })
+        .collect()
+}
+
+fn spans_line(s: &Spans) -> String {
+    const W: usize = 20;
+    format!("legs {}  body {}  arms {}", span_bar(s.legs, W), span_bar(s.body, W), span_bar(s.arms, W))
+}
+
+fn sequence_lines(name: &str, q: &Sequence, note: &str) -> String {
+    format!("{name:<7} drive    {}\n{:<7} recovery {}{note}", spans_line(&q.drive), "", spans_line(&q.recovery))
+}
+
+/// Each stroke's order by the camera: where in the handle's travel (left to
+/// right, drive then recovery) the legs, the body and the arms moved.
+pub fn sequence(file: &Path) -> Result<()> {
+    let (_, events, _) = recording::read_all(file)?;
+    let a = analysis::analyze(&events, None);
+    let Some(target) = analysis::technique::target_sequence(&a.strokes) else {
+        bail!("the camera saw too few strokes of this recording to judge their order");
+    };
+    println!("{}\n", sequence_lines("target", &target, ""));
+    for s in &a.strokes {
+        let Some(p) = &s.pose else { continue };
+        let faults: Vec<&str> = s.faults.iter().map(|h| h.fault.label()).collect();
+        let note = if faults.is_empty() { String::new() } else { format!("  {}", faults.join(", ")) };
+        println!("{}", sequence_lines(&format!("#{}", s.index + 1), &p.sequence, &note));
+    }
+    println!();
+    for r in analysis::technique::fault_rates(&a.strokes) {
+        println!("{:<20} {:>3} of {} strokes", r.fault.label(), r.hits, r.of);
     }
     Ok(())
 }

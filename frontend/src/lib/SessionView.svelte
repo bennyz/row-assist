@@ -4,6 +4,7 @@
   import FaultRates from './FaultRates.svelte';
   import Feel from './Feel.svelte';
   import Figures from './Figures.svelte';
+  import Sequence from './Sequence.svelte';
   import ForceCurve from './ForceCurve.svelte';
   import StrokeCharts from './StrokeCharts.svelte';
   import StrokeTable from './StrokeTable.svelte';
@@ -157,6 +158,16 @@
           <div class="figures">
             <Figures {stroke} typicalCatch={detail.typical_catch} typicalFinish={detail.typical_finish} />
           </div>
+          {#if stroke?.pose?.sequence && detail.target_sequence}
+            <div class="order">
+              <h3>Stroke {stroke.index + 1}: the order it was rowed in</h3>
+              <Sequence
+                sequence={stroke.pose.sequence}
+                target={detail.target_sequence}
+                faults={stroke.faults.map((h) => h.fault)}
+              />
+            </div>
+          {/if}
           <p class="muted cam">
             Camera: {s.camera.side} side{s.camera.offset_ms != null
               ? `, synced to the PM5 (${fixed(s.camera.offset_ms)} ms)`
@@ -304,8 +315,15 @@
   .error {
     color: var(--bad);
   }
-  .figures {
+  .figures,
+  .order {
     margin-top: 1.75rem;
+  }
+  h3 {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ink-2);
+    margin: 0 0 0.75rem;
   }
   .reference {
     margin: 0.9rem 0 0;
