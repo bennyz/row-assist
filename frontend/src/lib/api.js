@@ -25,6 +25,9 @@ export const markRow = (fault) =>
     body: JSON.stringify({ fault }),
   });
 
+/** Start the workout: Go after a 10-second countdown. */
+export const startWorkout = () => fetch('/api/row/start', { method: 'POST' });
+
 /** Row this next instead of the plan: a workout kind (the plan's own goes back to it). */
 export const pickWorkout = (kind) =>
   fetch('/api/row/workout', {

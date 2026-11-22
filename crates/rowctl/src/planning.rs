@@ -68,13 +68,11 @@ pub async fn run(args: PlanArgs) -> Result<()> {
         println!("  Focus: {} (\"{}\")", f.label(), f.cue());
     }
 
-    let progression = ctx.progression(p.kind).await?;
-    if let Some(n) = &progression {
+    if let Some(n) = ctx.progression(p.kind).await? {
         println!("  {}", n.note);
     }
-    let heart = ctx.heart().map(|h| h.0);
-    if let Some(setup) = p.kind.workout(heart.as_ref(), progression.as_ref()).pm5_setup() {
-        println!("\nSet on the PM5: {setup}.");
+    if p.kind.intervals().is_some() {
+        println!("\nOn the PM5: Just Row. The row screen times the intervals from its Start.");
     }
     println!("\nRow it with: {}", p.command());
     Ok(())

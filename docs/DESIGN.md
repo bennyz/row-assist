@@ -298,23 +298,25 @@ Judged on the median of the last 6 strokes; silent for the first 60 s; ≥ 30 s 
 heart-rate cue blocks the power cue (never "harder" while HR is over the ceiling). Halfway and
 time calls always get through.
 
-**Intervals (built, `analysis::workout`):** a workout is one piece, or work and rest intervals
-with targets for each work interval. The PM5 is set up for the intervals by hand (the row screen
-says how), and the coach follows it: "Go. 2 of 4." (with the interval's rate or power when it has
-them; "Last one." for the last) as work begins, "Rest. Paddle easy." as it ends, "Time. Paddle
-down." after the last or when the PM5's workout ends. Following the PM5 rather than a clock keeps
-the calls on the monitor's intervals after a warm-up in the same row. Corrections come only in
-work, 30 s in, against that interval's targets, and the row doesn't end while the PM5 runs an
-interval workout, rests sat out or not.
+**Starting a workout (built):** every workout starts from the row screen's Start (the button, or
+Space/Enter): Go 10 s later ("Starting in ten seconds." … "Go."). Rowing before Start is the
+warm-up: recorded, coached for technique only (no pacing, no time calls). The recording starts at
+the first stroke or at Start, whichever comes first. From Go the coach times the workout on its
+own clock (`cues::Pacer`, `Workout::at`): a piece's halfway and time calls; for intervals, "Go. 2 of
+4." (with the interval's rate or power), "Rest. Paddle easy.", "Ten seconds." before each work
+interval after the first, "Last one.", "Time. Paddle down.". Corrections come only in work, after
+30 s of a work interval (60 s of a piece), against that part's targets, and the row doesn't end
+between Start and the workout's end, rests sat out or not. Each part's start goes into the
+recording as a `Stage` event, which is where the analysis takes the work intervals from. The PM5
+just runs Just Row: nothing to set on it. `rowctl record`, with no Start button, starts the
+workout at the first stroke.
 
-What the PM5 says (seen on hardware, 2026-11-22, 4:00/3:00 intervals): its workout state (PM CSAFE
-`0x8D`) is 0 waiting, then **4 (interval work by time) through work and rest alike**, never 3
-(rest) as the spec has it; once a 6 (rest ending into work) for one poll; then 10, 12, 13 as it
-ends, logs and re-arms. What marks each interval is its clock: `work_time_cs` counts the interval
-down and starts again at the next one's length, and distance starts again at 0. So
-`IntervalClock` takes the first interval as work and each clock reset as the next stage, rest
-and work in turn, and the strokes' distance is carried across the resets. `rowctl simulate
---plan four-by-four` and `watch --sim --plan …` row intervals the same way.
+The first 4×4 (2026-11-22) was timed on the PM5 instead, set up as six work intervals with the
+rests among them rowed easy, so the PM5 reported 4 (interval work by time) throughout; whether it
+reports 3 in a real rest is still unseen. Each interval's clock (`work_time_cs`) counts it down and
+starts again at the next, and distance starts again at 0. Rows like that, with no `Stage` events,
+are read from that clock (`workout::IntervalClock`: the first interval work, then rest and work in
+turn), and distance is carried across the resets.
 
 ### 5.3 Mirror (visual feedback)
 
@@ -561,7 +563,8 @@ Fitness after a long gap is unknown, so the ramp measures it:
 - Planner shows the workout; loading it onto the PM5 over CSAFE is a goal, not a given.
   v1 found that `SETPMCFG` workout sub-commands return PREVREJECT without Concept2's USB
   auth; only the screen-state command was accepted. The standard CSAFE workout commands
-  (`SETTWORK`, `SETHORIZONTAL`, `SETPROGRAM`) are untested. Fallback: set it on the PM5 by hand.
+  (`SETTWORK`, `SETHORIZONTAL`, `SETPROGRAM`) are untested. Not needed for the workouts so far: the
+  row screen's Start times them (§5.2) with the PM5 on Just Row.
 - **Experiment ready:** `rowctl pm5-probe --workout` reads the workout type, sends
   SETTWORK, SETPROGRAM 0 and GOINUSE one frame each (so a rejection names the command), reads
   back, then the same in one frame, and reads back again. Fixed time (type 4/5) afterwards

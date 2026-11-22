@@ -7,4 +7,4 @@ mod clock;
 mod event;
 
 pub use clock::Clock;
-pub use event::{Device, Event, EventKind, Heart, Link, POSE_JOINTS, Pm5Force, Pm5Status, Pose, StrokeState};
+pub use event::{Device, Event, EventKind, Heart, Link, POSE_JOINTS, Pm5Force, Pm5Status, Pose, Stage, StrokeState};

@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use analysis::cues::{FocusCoach, Pacer, Targets};
+use analysis::cues::{Cue, FocusCoach, Pacer, Targets};
 use analysis::workout::{Kind, Progression, Workout};
 use analysis::strokes::{StrokeAssembler, StrokeRecord};
 use analysis::technique::{Fault, LiveTechnique};
@@ -329,8 +329,9 @@ pub struct Coach {
     speaker: Option<Speaker>,
     /// Screens following the session (the mirror), when serving.
     pub screens: Option<LiveSender>,
-    /// Cues given since the recorder last took them.
-    said: Vec<String>,
+    /// What the coach said, and the workout's stages, since the recorder
+    /// last took them.
+    said: Vec<EventKind>,
 }
 
 impl Coach {
@@ -343,9 +344,6 @@ impl Coach {
             println!("{}", p.note);
         }
         let (workout, zone_ok) = setup.workout(heart.as_ref());
-        if let Some(pm5) = workout.pm5_setup() {
-            println!("Set on the PM5: {pm5}");
-        }
         if !zone_ok {
             eprintln!("--zone needs a heart profile (see rowctl profile); ignoring it");
         }
@@ -371,15 +369,37 @@ impl Coach {
         }
     }
 
-    /// A PM5 status poll: for intervals, the call as work or rest begins.
-    pub fn pm5(&mut self, s: &Pm5Status, t_us: i64) {
-        let cue = self.pacer.as_mut().and_then(|p| p.pm5(s, t_us));
-        if let Some(c) = cue {
-            self.cue(&c.text());
+    /// Go: the workout's clock starts (from the row screen's Start; in
+    /// `record`, at the first stroke). Before it, rowing is the warm-up.
+    pub fn start(&mut self, go_us: i64) {
+        if let Some(p) = self.pacer.as_mut() {
+            p.start(go_us);
         }
     }
 
-    fn cue(&mut self, text: &str) {
+    pub fn started(&self) -> bool {
+        self.pacer.as_ref().is_some_and(Pacer::started)
+    }
+
+    /// Between Go and the workout's end.
+    pub fn running(&self, now_us: i64) -> bool {
+        self.pacer.as_ref().is_some_and(|p| p.running(now_us))
+    }
+
+    /// Every second: the workout's call that's due (each part beginning,
+    /// halfway, time), with the stage it begins for the recording.
+    pub fn tick(&mut self, now_us: i64) {
+        let Some(p) = self.pacer.as_mut() else { return };
+        let Some(cue) = p.tick(now_us) else { return };
+        let at = p.position(now_us);
+        self.say(&cue.text());
+        if let (Cue::Go { .. } | Cue::Rest | Cue::Time, Some(at)) = (cue, at) {
+            self.said.push(EventKind::Stage { stage: at.stage, n: at.n });
+        }
+    }
+
+    /// Speak, show on the screens, and keep for the recording.
+    pub fn say(&mut self, text: &str) {
         println!("  » {text}");
         if let Some(s) = &self.speaker {
             s.say(text);
@@ -387,19 +407,14 @@ impl Coach {
         if let Some(hub) = &self.screens {
             live::publish(hub, &LiveMsg::Cue { text });
         }
-        self.said.push(text.to_owned());
+        self.said.push(EventKind::Cue { text: text.to_owned() });
     }
 
-    /// The cues given since the last call, as events at `t_us` for the
-    /// recording: a review can then see what each one did.
+    /// What was said and the stages begun since the last call, as events at
+    /// `t_us` for the recording: a review can then see what each cue did,
+    /// and when each part of the workout ran.
     pub fn take_said(&mut self, t_us: i64) -> Vec<Event> {
-        self.said
-            .drain(..)
-            .map(|text| Event {
-                t_us,
-                kind: EventKind::Cue { text },
-            })
-            .collect()
+        self.said.drain(..).map(|kind| Event { t_us, kind }).collect()
     }
 
     /// A camera frame: buffer it, and show it on the screens.
@@ -449,18 +464,13 @@ impl Coach {
             live::publish(hub, &LiveMsg::Focus { fault, cue: fault.map(|f| f.cue()) });
             let none = Targets::default();
             let pacer = self.pacer.as_ref();
-            let targets = pacer.and_then(Pacer::targets).unwrap_or(&none);
-            let minutes = match pacer.map(Pacer::workout) {
-                Some(Workout::Piece { minutes, .. }) => *minutes,
-                _ => None,
-            };
+            let targets = pacer.and_then(|p| p.targets(now_us)).unwrap_or(&none);
             live::publish(
                 hub,
                 &LiveMsg::Targets {
                     targets,
                     rhythm: targets.rhythm(),
-                    minutes,
-                    interval: pacer.and_then(|p| p.interval(now_us)),
+                    position: pacer.and_then(|p| p.position(now_us)),
                 },
             );
             if let Some(target) = self.technique.target() {
@@ -481,7 +491,7 @@ impl Coach {
         {
             match self.drag_target {
                 Some(t) if (df as i16 - t as i16).abs() > DRAG_TOLERANCE => {
-                    self.cue(&format!("Drag factor {df}. Target {t}."));
+                    self.say(&format!("Drag factor {df}. Target {t}."));
                 }
                 Some(_) => {}
                 None => println!("  Drag factor {df} (no target: set one with rowctl profile --drag {df})"),
@@ -491,8 +501,8 @@ impl Coach {
         let technique = self.focus.as_mut().and_then(|f| f.stroke(r));
         let pacing = self.pacer.as_mut().and_then(|p| p.stroke(r));
         match (technique, pacing) {
-            (Some(t), _) => self.cue(t.text()),
-            (None, Some(p)) => self.cue(&p.text()),
+            (Some(t), _) => self.say(t.text()),
+            (None, Some(p)) => self.say(&p.text()),
             (None, None) => {}
         }
     }
@@ -669,13 +679,15 @@ async fn run(
                 if let Some(msg) = view.apply(&ev) {
                     println!("{msg}");
                 }
-                match &ev.kind {
-                    EventKind::Pose(p) => coach.pose(p),
-                    EventKind::Pm5Status(s) => coach.pm5(s, ev.t_us),
-                    _ => {}
+                if let EventKind::Pose(p) = &ev.kind {
+                    coach.pose(p);
                 }
                 if let Some(mut r) = asm.push(&ev) {
                     view.strokes += 1;
+                    // No Start button here: the workout starts with the row.
+                    if !coach.started() {
+                        coach.start(r.t_catch_us);
+                    }
                     coach.observe(&mut r);
                     println!("{}", record_line(&r, start_us, view.heart.as_ref()));
                     coach.publish_stroke(&r);
@@ -690,7 +702,16 @@ async fn run(
             _ = ticker.tick() => {
                 println!("{}", view.status_line(clock.now_us() - start_us));
             }
-            _ = screens.tick() => coach.publish_focus(clock.now_us()),
+            _ = screens.tick() => {
+                let now = clock.now_us();
+                coach.tick(now);
+                for ev in coach.take_said(now) {
+                    if let Some(w) = writer.as_mut() {
+                        w.write(&ev)?;
+                    }
+                }
+                coach.publish_focus(now);
+            }
             _ = &mut ctrl_c => break,
             _ = &mut deadline => break,
         }

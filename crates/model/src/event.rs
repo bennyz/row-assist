@@ -27,6 +27,19 @@ pub enum EventKind {
     Cue { text: String },
     /// Body landmarks from one camera frame, detected in the browser.
     Pose(Pose),
+    /// The workout moved on, as the coach times it from the row screen's
+    /// Start: work interval `n` began (a piece is one), rest after it, or
+    /// it's done.
+    Stage { stage: Stage, n: u32 },
+}
+
+/// A part of a workout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stage {
+    Work,
+    Rest,
+    Done,
 }
 
 /// PM5 status as reported by one poll. Fields are `None` when the PM5 left

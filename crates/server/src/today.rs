@@ -13,7 +13,6 @@ use crate::{Api, ApiError};
 pub struct Today {
     pub proposal: Proposal,
     pub command: String,
-    pub pm5_setup: Option<String>,
     pub readiness: Readiness,
 }
 
@@ -26,11 +25,8 @@ pub async fn get(State(api): State<Api>) -> Result<Json<Today>, ApiError> {
     let focus = store::history::auto_focus(pool, true).await?.map(|f| f.0);
     let rows = store::history::planner_rows(pool).await?;
     let proposal = propose(&rows, today, ready.level, focus);
-    let heart = store::history::heart_profile(pool, today).await?;
-    let progression = store::history::progression(pool, proposal.kind, heart.as_ref()).await?;
     Ok(Json(Today {
         command: proposal.command(),
-        pm5_setup: proposal.kind.workout(heart.as_ref(), progression.as_ref()).pm5_setup(),
         proposal,
         readiness: ready,
     }))

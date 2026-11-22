@@ -53,7 +53,6 @@ pub struct Plan {
     pub progress: Option<String>,
     pub proposal: Proposal,
     pub readiness: Readiness,
-    pub pm5_setup: Option<String>,
     /// What the coach will call, e.g. "rate 19–21, 48–58 W, 20 min".
     pub cues: String,
 }
@@ -67,9 +66,23 @@ pub struct Ended {
     pub session: Option<i64>,
 }
 
+/// The workout, which the row screen's Start begins: rowing before it is
+/// the warm-up.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Workout {
+    #[default]
+    Waiting,
+    /// Started: Go in `left_s`.
+    Countdown { left_s: f64 },
+    Running,
+    Done,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct RowState {
     pub phase: Phase,
+    pub workout: Workout,
     pub plan: Option<Plan>,
     pub devices: Devices,
     pub hr: Option<u16>,
@@ -108,6 +121,9 @@ pub enum Command {
     Mark(Mark),
     /// Row this next instead of the plan (the plan's own kind goes back to it).
     Pick(Kind),
+    /// Start the workout: Go after a countdown. Recording starts now if it
+    /// hasn't with a stroke.
+    Start,
 }
 
 /// The server's end of the runner: its state, and a way to send it commands.
@@ -134,6 +150,11 @@ async fn command(api: &Api, c: Command) -> StatusCode {
 
 pub async fn stop(State(api): State<Api>) -> StatusCode {
     command(&api, Command::Stop).await
+}
+
+/// `POST /api/row/start`: the workout begins after a countdown.
+pub async fn start(State(api): State<Api>) -> StatusCode {
+    command(&api, Command::Start).await
 }
 
 #[derive(Debug, Deserialize)]

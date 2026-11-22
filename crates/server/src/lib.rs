@@ -120,6 +120,7 @@ pub fn router(api: Option<Api>, web_dir: &Path, live: Live) -> Router {
                 .route("/api/row/stop", axum::routing::post(row::stop))
                 .route("/api/row/mark", axum::routing::post(row::mark))
                 .route("/api/row/workout", axum::routing::post(row::pick))
+                .route("/api/row/start", axum::routing::post(row::start))
                 .with_state(api),
         );
     }

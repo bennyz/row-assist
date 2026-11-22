@@ -1,21 +1,13 @@
 <script>
-  // The row's state and the devices, across the top of the row screen. Read
-  // from the erg: one line, big. Everything comes from the server's `row`
-  // message; the countdown is only display.
-  import { clock } from './format.js';
+  // The row's state, the workout's Start and where it is, and the devices,
+  // across the top of the row screen. Read from the erg: one line, big.
+  // Everything comes from the server's `row` message and the coach's
+  // position; the countdowns are only display.
+  import { startWorkout } from './api.js';
+  import { KINDS, clock } from './format.js';
 
-  // `interval`: where an interval workout is, from the coach ({stage, n, of, left_s}).
-  let { row, minutes = null, interval = null, onstop } = $props();
-
-  const stageLabel = $derived(
-    interval == null
-      ? null
-      : interval.stage === 'work'
-        ? `Work ${interval.n} of ${interval.of}`
-        : interval.stage === 'rest'
-          ? 'Rest'
-          : 'Done',
-  );
+  // `position`: where the workout is once started ({stage, n, of, left_s}).
+  let { row, position = null, onstop } = $props();
 
   // A rest shorter than this isn't worth a countdown.
   const COUNTDOWN_AFTER_S = 15;
@@ -25,6 +17,32 @@
       ? Math.max(0, row.ends_after_s - row.idle_s)
       : null,
   );
+  const w = $derived(row.workout);
+  const name = $derived(KINDS[row.plan?.kind] ?? 'workout');
+  const canStart = $derived(w.state === 'waiting' && row.phase !== 'saving');
+  const stageLabel = $derived(
+    position == null
+      ? null
+      : position.stage === 'rest'
+        ? 'Rest'
+        : position.of > 1
+          ? `Work ${position.n} of ${position.of}`
+          : name,
+  );
+
+  let failed = $state(false);
+  async function start() {
+    failed = false;
+    const res = await startWorkout().catch(() => null);
+    failed = !res?.ok;
+  }
+  // Space or Enter starts it, unless a control has the key.
+  function key(e) {
+    if (!canStart || (e.key !== ' ' && e.key !== 'Enter')) return;
+    if (e.target.closest?.('button, input, textarea, select, a')) return;
+    e.preventDefault();
+    start();
+  }
 
   const devices = $derived([
     { name: 'PM5', link: row.devices.pm5 },
@@ -35,17 +53,27 @@
   const tone = (c) => (c === true ? 'ok' : c === false ? 'bad' : 'muted');
 </script>
 
+<svelte:window onkeydown={key} />
+
 <div class="bar">
   <p class="what" aria-live="polite">
-    {#if row.phase === 'ready'}
-      <strong>Ready.</strong> Start rowing: it records from your first stroke.
-    {:else if row.phase === 'rowing'}
-      <strong class="rec"><span aria-hidden="true">●</span> Recording</strong>
-      <span class="num">{clock(row.elapsed_s)}</span>{#if minutes}{' '}<span class="of">of {clock(minutes * 60)}</span>{/if} · {row.strokes} strokes
-      {#if stageLabel}· <span class="stage {interval.stage}">{stageLabel}</span>{#if interval.stage !== 'done'}{' '}<span class="num">{clock(interval.left_s)}</span> left{/if}{/if}
-      {#if ending != null}<span class="ending">· saves in {clock(ending)} unless you row</span>{/if}
-    {:else}
+    {#if row.phase === 'saving'}
       <strong>Saving…</strong>
+    {:else}
+      {#if row.phase === 'rowing'}
+        <strong class="rec"><span aria-hidden="true">●</span> Recording</strong>
+        <span class="num">{clock(row.elapsed_s)}</span> · {row.strokes} strokes ·
+      {/if}
+      {#if w.state === 'waiting'}
+        <strong>{row.phase === 'ready' ? 'Ready.' : 'Warming up.'}</strong> Press Start for the {name.toLowerCase()}.
+      {:else if w.state === 'countdown'}
+        <strong class="go">Go in <span class="num">{Math.ceil(w.left_s)}</span></strong>
+      {:else if w.state === 'running' && stageLabel}
+        <span class="stage {position.stage}">{stageLabel}</span>{#if position.left_s != null}{' '}<span class="num">{clock(position.left_s)}</span> left{/if}
+      {:else if w.state === 'done'}
+        <strong>Done.</strong> Cool down; it saves when you stop.
+      {/if}
+      {#if ending != null}<span class="ending">· saves in {clock(ending)} unless you row</span>{/if}
     {/if}
   </p>
   <ul class="devices" aria-label="Devices">
@@ -56,12 +84,34 @@
       </li>
     {/each}
   </ul>
+  {#if canStart}
+    <button class="start" onclick={start}>Start</button>
+  {/if}
   {#if row.phase === 'rowing'}
     <button class="stop" onclick={onstop}>Stop and save</button>
   {/if}
+  {#if failed}<p class="failed" role="alert">Not started: is Row Assist running?</p>{/if}
 </div>
 
 <style>
+  .start {
+    padding: 0.55rem 1.6rem;
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--bg);
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .start:hover {
+    filter: brightness(1.08);
+  }
+  .what .go {
+    color: var(--accent);
+  }
+  .failed {
+    margin: 0;
+    color: var(--bad);
+  }
   .stage {
     font-weight: 600;
   }
@@ -96,9 +146,6 @@
   .num {
     font-family: var(--font-num);
     color: var(--ink);
-  }
-  .of {
-    font-family: var(--font-num);
   }
   .ending {
     color: var(--warn);

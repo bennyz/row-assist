@@ -3,7 +3,8 @@
 //! screen gets each message. A screen that falls behind skips ahead rather
 //! than queueing stale frames.
 
-use analysis::cues::{IntervalNow, Rhythm, Targets};
+use analysis::cues::{Rhythm, Targets};
+use analysis::workout::Position;
 use analysis::ideal::{Guide, Sequence};
 use analysis::pose::{Angles, Framing};
 use analysis::technique::{Fault, Figure, Target};
@@ -46,10 +47,8 @@ pub enum LiveMsg<'a> {
         #[serde(flatten)]
         targets: &'a Targets,
         rhythm: Option<Rhythm>,
-        /// A piece's length.
-        minutes: Option<f64>,
-        /// Where an interval workout is.
-        interval: Option<IntervalNow>,
+        /// Where the workout is, once it has started.
+        position: Option<Position>,
     },
     /// The camera's setup check, twice a second while a camera page is connected.
     Framing(&'a Framing),

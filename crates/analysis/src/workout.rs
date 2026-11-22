@@ -3,7 +3,7 @@
 //! coach follows the PM5 from work to rest and back (`stage`), so its calls
 //! match the monitor even after a warm-up in the same row.
 
-use model::{Event, EventKind, Pm5Status};
+use model::{Event, EventKind, Pm5Status, Stage};
 use serde::{Deserialize, Serialize};
 
 use crate::cues::Targets;
@@ -31,7 +31,7 @@ pub enum Kind {
     Minimum,
 }
 
-/// Work intervals, as the PM5 is set up for them by hand.
+/// An interval workout's shape: work intervals and the rests between.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Intervals {
     pub count: u32,
@@ -238,16 +238,46 @@ impl Workout {
         }
     }
 
-    /// What to set on the PM5 by hand, for intervals.
-    pub fn pm5_setup(&self) -> Option<String> {
+    /// Where the workout is `elapsed_s` after Go.
+    pub fn at(&self, elapsed_s: f64) -> Position {
+        let done = |of: u32| Position {
+            stage: Stage::Done,
+            n: of,
+            of,
+            left_s: None,
+        };
         match self {
-            Self::Piece { .. } => None,
-            Self::Intervals { work_s, rest_s, work } => Some(format!(
-                "Intervals: Time, {} work / {} rest; press Menu after interval {}",
-                mmss(*work_s),
-                mmss(*rest_s),
-                work.len()
-            )),
+            Self::Piece { minutes, .. } => match minutes.map(|m| m * 60.0 - elapsed_s) {
+                Some(left) if left <= 0.0 => done(1),
+                left => Position {
+                    stage: Stage::Work,
+                    n: 1,
+                    of: 1,
+                    left_s: left,
+                },
+            },
+            Self::Intervals { work_s, rest_s, work } => {
+                let (w, r, of) = (*work_s as f64, *rest_s as f64, work.len() as u32);
+                let k = (elapsed_s / (w + r)) as u32;
+                let within = elapsed_s - k as f64 * (w + r);
+                if k >= of || (k + 1 == of && within >= w) {
+                    done(of)
+                } else if within < w {
+                    Position {
+                        stage: Stage::Work,
+                        n: k + 1,
+                        of,
+                        left_s: Some(w - within),
+                    }
+                } else {
+                    Position {
+                        stage: Stage::Rest,
+                        n: k + 1,
+                        of,
+                        left_s: Some(w + r - within),
+                    }
+                }
+            }
         }
     }
 
@@ -258,6 +288,16 @@ impl Workout {
             Self::Intervals { work, .. } => work.iter_mut().collect(),
         }
     }
+}
+
+/// Where a workout is: work interval `n` of `of` (a piece is 1 of 1), the
+/// rest after it, or done; `left_s` of that part, when it has a length.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Position {
+    pub stage: Stage,
+    pub n: u32,
+    pub of: u32,
+    pub left_s: Option<f64>,
 }
 
 /// A work interval's power band: this much either side of its target.
@@ -370,19 +410,38 @@ pub fn progression(kind: Kind, last: &[WorkInterval], hr_top: Option<f64>, effor
     }
 }
 
-/// When each work interval ran, from the PM5's status polls in a
-/// recording's events (`IntervalClock`): to the next interval, or the
-/// recording's end.
+/// When each work interval of an interval workout ran: from the coach's
+/// `Stage` events, or in a row recorded before those (timed by the PM5),
+/// from the PM5's interval clock. A piece has none.
 pub fn work_windows(events: &[Event]) -> Vec<(i64, i64)> {
+    let stages: Vec<(i64, Stage, u32)> = events
+        .iter()
+        .filter_map(|e| match e.kind {
+            EventKind::Stage { stage, n } => Some((e.t_us, stage, n)),
+            _ => None,
+        })
+        .collect();
+    if !stages.is_empty() {
+        let intervals = stages.iter().any(|&(_, s, _)| s == Stage::Rest) || stages.iter().any(|&(_, s, n)| s == Stage::Work && n > 1);
+        return if intervals { windows(stages.iter().map(|&(t, s, _)| (t, Some(s))), events) } else { Vec::new() };
+    }
     let mut clock = IntervalClock::default();
+    let polls = events.iter().filter_map(|e| match &e.kind {
+        EventKind::Pm5Status(s) => Some((e.t_us, clock.poll(s))),
+        _ => None,
+    });
+    windows(polls, events)
+}
+
+/// Work windows from stage changes in time order: each work to the next change.
+fn windows(changes: impl Iterator<Item = (i64, Option<Stage>)>, events: &[Event]) -> Vec<(i64, i64)> {
     let mut windows = Vec::new();
     let mut open: Option<i64> = None;
-    for ev in events {
-        let EventKind::Pm5Status(s) = &ev.kind else { continue };
-        match (clock.poll(s), open) {
-            (Some(Stage::Work), _) => open = Some(ev.t_us),
+    for (t_us, stage) in changes {
+        match (stage, open) {
+            (Some(Stage::Work), _) => open = Some(t_us),
             (Some(_), Some(from)) => {
-                windows.push((from, ev.t_us));
+                windows.push((from, t_us));
                 open = None;
             }
             _ => {}
@@ -394,32 +453,24 @@ pub fn work_windows(events: &[Event]) -> Vec<(i64, i64)> {
     windows
 }
 
-/// Where an interval workout set on the PM5 is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Stage {
-    Work,
-    Rest,
-    /// The PM5's workout ended (or was stopped).
-    Done,
-}
 
 /// Whether the PM5 is running an interval workout: states 3–9 (work, rest
-/// and the changes between, by Concept2's PM CSAFE spec). A real PM5 reports
-/// 4, interval work by time, through the rests too (2026-11-22).
-pub fn in_intervals(code: u8) -> bool {
+/// and the changes between, by Concept2's PM CSAFE spec).
+fn in_intervals(code: u8) -> bool {
     (3..=9).contains(&code)
 }
 
 /// An interval clock jumping up by more than this has started the next interval.
 const NEXT_INTERVAL_CS: u32 = 500;
 
-/// Follows an interval workout on the PM5 from its status polls. The PM5
-/// doesn't say which intervals are rests (see `in_intervals`); what marks
-/// each interval is its clock (`work_time_cs`), which counts it down and
-/// starts again at the next one's length. So the first interval is work,
-/// each reset moves to rest or back to work, and leaving the interval states
-/// (10–12: ended, stopped, logged) is the end.
+/// Follows an interval workout timed by the PM5, for rows recorded before
+/// the row screen timed them (the first 4×4, 2026-11-22: set up on the PM5
+/// as six work intervals, the rests among them rowed easy, so the PM5 said 4,
+/// interval work, throughout). What marks each interval is its clock
+/// (`work_time_cs`), which counts it down and starts again at the next one's
+/// length: the first interval is work, each reset moves to rest or back to
+/// work, and leaving the interval states (10–12: ended, stopped, logged) is
+/// the end.
 #[derive(Debug, Clone, Default)]
 pub struct IntervalClock {
     stage: Option<Stage>,
@@ -474,10 +525,6 @@ mod tests {
         };
         assert_eq!((work_s, rest_s, work.len()), (240, 180, 4));
         assert!(work.iter().all(|t| t.hr_max == Some(175.0) && t.rate == Some(FOUR_BY_FOUR_RATE)));
-        assert_eq!(
-            Kind::FourByFour.workout(None, None).pm5_setup().as_deref(),
-            Some("Intervals: Time, 4:00 work / 3:00 rest; press Menu after interval 4")
-        );
         assert!(Kind::FourByFour.is_hard());
     }
 
@@ -577,12 +624,7 @@ mod tests {
             work_s: Some(180),
             note: String::new(),
         };
-        let w = Kind::FourByFour.workout(None, Some(&p));
-        assert_eq!(
-            w.pm5_setup().as_deref(),
-            Some("Intervals: Time, 3:00 work / 3:00 rest; press Menu after interval 4")
-        );
-        let Workout::Intervals { work_s, work, .. } = w else { panic!() };
+        let Workout::Intervals { work_s, work, .. } = Kind::FourByFour.workout(None, Some(&p)) else { panic!() };
         assert_eq!(work_s, 180);
         assert!(work.iter().all(|t| t.watts == Some((106.0, 114.0))));
     }
@@ -637,6 +679,35 @@ mod tests {
         let mut piece = IntervalClock::default();
         let EventKind::Pm5Status(s) = poll(5, 1, 300).kind else { panic!() };
         assert_eq!(piece.poll(&s), None, "a single piece isn't intervals");
+    }
+
+    #[test]
+    fn where_a_workout_is() {
+        let four = Kind::FourByFour.workout(None, None);
+        let at = |s: f64| {
+            let p = four.at(s);
+            (p.stage, p.n, p.left_s.map(|l| l.round()))
+        };
+        assert_eq!(at(0.0), (Stage::Work, 1, Some(240.0)));
+        assert_eq!(at(250.0), (Stage::Rest, 1, Some(170.0)));
+        assert_eq!(at(420.0), (Stage::Work, 2, Some(240.0)));
+        assert_eq!(at(3.0 * 420.0 + 239.0), (Stage::Work, 4, Some(1.0)));
+        assert_eq!(at(3.0 * 420.0 + 240.0), (Stage::Done, 4, None), "no rest after the last");
+        let piece = Kind::Reference.workout(None, None);
+        assert_eq!((piece.at(60.0).stage, piece.at(60.0).left_s), (Stage::Work, Some(1140.0)));
+        assert_eq!(piece.at(1200.0).stage, Stage::Done);
+    }
+
+    #[test]
+    fn work_windows_come_from_the_coach_s_stages() {
+        let stage = |sec: i64, stage: Stage, n: u32| Event {
+            t_us: sec * 1_000_000,
+            kind: EventKind::Stage { stage, n },
+        };
+        let events = [stage(10, Stage::Work, 1), stage(250, Stage::Rest, 1), stage(430, Stage::Work, 2), stage(670, Stage::Done, 2)];
+        assert_eq!(work_windows(&events), vec![(10_000_000, 250_000_000), (430_000_000, 670_000_000)]);
+        let piece = [stage(10, Stage::Work, 1), stage(1210, Stage::Done, 1)];
+        assert!(work_windows(&piece).is_empty(), "a piece has no work intervals");
     }
 
     #[test]

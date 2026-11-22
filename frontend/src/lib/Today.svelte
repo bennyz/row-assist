@@ -22,7 +22,6 @@
         {#each p.why.slice(0, 2) as w (w)}<li>{w}</li>{/each}
       </ul>
     {/if}
-    {#if t.pm5_setup}<p class="setup">On the PM5: {t.pm5_setup}</p>{/if}
   </section>
 {/if}
 
@@ -46,10 +45,6 @@
   ul {
     margin: 0.35rem 0 0;
     padding-left: 1rem;
-    color: var(--ink-2);
-  }
-  .setup {
-    margin: 0.4rem 0 0;
     color: var(--ink-2);
   }
 </style>

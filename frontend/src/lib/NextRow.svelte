@@ -39,7 +39,9 @@
   {/if}
   {#if plan.cues}<p class="cues">Cues: {plan.cues}</p>{/if}
   {#if plan.progress}<p class="progress">{plan.progress}</p>{/if}
-  {#if plan.pm5_setup}<p class="pm5">Set on the PM5: {plan.pm5_setup}</p>{/if}
+  <p class="pm5">
+    Warm up as you like, then press <strong>Start</strong>: it begins 10 seconds later{#if ['rate_steps', 'four_by_four'].includes(plan.kind)}, and this screen times the intervals (the PM5 on Just Row){/if}.
+  </p>
   {#if picked}
     <p class="about">{plan.about}</p>
   {:else if p.why.length}
