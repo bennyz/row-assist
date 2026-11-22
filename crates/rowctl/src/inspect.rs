@@ -120,6 +120,46 @@ fn sequence_lines(name: &str, q: &Sequence, note: &str) -> String {
 
 /// Each stroke's order by the camera: where in the handle's travel (left to
 /// right, drive then recovery) the legs, the body and the arms moved.
+/// The typical stroke where the good stroke hands over from one part to the
+/// next, beside the good stroke, with the strokes' median order and the good
+/// stroke's: what a picture of "what I did next to what I should" needs.
+pub fn filmstrip(file: &Path, work: bool) -> Result<()> {
+    use analysis::ideal::Phase;
+    let (_, events, _) = recording::read_all(file)?;
+    let a = analysis::analyze(&events, None);
+    let windows = if work {
+        analysis::workout::work_windows(&events)
+    } else {
+        let first = a.strokes.first().map(|s| s.t_catch_us);
+        let last = a.strokes.last().and_then(|s| s.t_next_catch_us.or(Some(s.t_catch_us)));
+        first.zip(last).into_iter().collect()
+    };
+    if windows.is_empty() {
+        bail!("no rowing to look at in this recording");
+    }
+    // Where the good stroke hands over from one part to the next.
+    let positions: Vec<(Phase, f64)> = [0.0, 0.3, 0.6, 1.0]
+        .map(|u| (Phase::Drive, u))
+        .into_iter()
+        .chain([0.2, 0.35, 0.65, 1.0].map(|u| (Phase::Recovery, u)))
+        .collect();
+    let stills = analysis::technique::filmstrip(&events, &windows, &positions);
+    let strokes: Vec<_> = a
+        .strokes
+        .iter()
+        .filter(|s| windows.iter().any(|&(lo, hi)| (lo..hi).contains(&s.t_catch_us)))
+        .cloned()
+        .collect();
+    let out = serde_json::json!({
+        "stills": stills,
+        "target_sequence": analysis::technique::target_sequence(&a.strokes),
+        "sequences": strokes.iter().filter_map(|s| s.pose.as_ref().map(|p| p.sequence)).collect::<Vec<_>>(),
+        "faults": analysis::technique::fault_rates(&strokes),
+    });
+    println!("{}", serde_json::to_string(&out)?);
+    Ok(())
+}
+
 pub fn sequence(file: &Path) -> Result<()> {
     let (_, events, _) = recording::read_all(file)?;
     let a = analysis::analyze(&events, None);

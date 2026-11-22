@@ -64,6 +64,14 @@ enum Command {
     /// Show the order every stroke in a recording was rowed in: when the
     /// legs, the body and the arms moved, against the good stroke
     Sequence { file: PathBuf },
+    /// The typical stroke at positions through the drive and the recovery,
+    /// beside the good stroke, as JSON (with --work, an interval workout's
+    /// work intervals only)
+    Filmstrip {
+        file: PathBuf,
+        #[arg(long)]
+        work: bool,
+    },
     /// Score the fault detectors on a recording with marked blocks
     Check { file: PathBuf },
     /// How Row Assist itself did on each row: what the camera delivered, the
@@ -187,6 +195,7 @@ async fn main() -> Result<()> {
         Command::Replay { file, speed } => inspect::replay(&file, speed).await,
         Command::Curves { file } => inspect::curves(&file),
         Command::Sequence { file } => inspect::sequence(&file),
+        Command::Filmstrip { file, work } => inspect::filmstrip(&file, work),
         Command::Check { file } => check::run(&file),
         Command::Report { files, db } => report::run(files, db).await,
         Command::Analyze { files, all, no_save, db } => review::analyze(files, all, no_save, db).await,

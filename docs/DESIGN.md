@@ -398,6 +398,17 @@ should have been, or when.
 - The simulator's handle runs half a thigh above the hip, as a real one does (it was at hip
   height, which no arm reaches with the body upright).
 
+**The stroke beside the good one (built, `technique::filmstrip`, `rowctl filmstrip <file> [--work]`):**
+a recording replayed through the live coach's view, and at each of the good stroke's hand-offs
+(drive: catch, legs half down, legs flat, finish; recovery: arms away, body over, hands past the
+knees, catch) where the rower's legs, body and arms were (the median of each over the strokes,
+with `--work` an interval workout's work only), posed on their own body beside the good stroke
+with the hands in the same place, and how far into the phase that was. Medians of the parts, not
+of the joints, which would shrink the limbs. JSON, for a picture of "what I did next to what I
+should". On the first real rows (2026-11-22) it showed the back opening from the first movement
+of the drive and the knees up by the time the body was over, as the faults said; the arrival at
+the catch was close to the good stroke.
+
 ### 5.5 Validation
 
 Each fault detector ships with a recorded session where the fault is rowed

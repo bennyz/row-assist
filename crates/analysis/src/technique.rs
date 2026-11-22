@@ -9,9 +9,9 @@ use std::collections::VecDeque;
 use model::{Event, EventKind, Pose};
 use serde::{Deserialize, Serialize};
 
-use crate::ideal::{Body, Direction, Guide, Phase, Sample, Sequence, sample, spans};
+use crate::ideal::{Body, Direction, Guide, Parts, Phase, Sample, Sequence, median, path, sample, spans};
 use crate::pose::{Angles, Joint, Side, angles, camera_tilt, has_pose, joint, near_side, thigh_px};
-use crate::strokes::StrokeRecord;
+use crate::strokes::{StrokeAssembler, StrokeRecord};
 
 /// Strokes before this are settling in; calibration skips them.
 const SYNC_SKIP: usize = 3;
@@ -699,6 +699,97 @@ pub fn apply(strokes: &mut [StrokeRecord], events: &[Event]) -> Option<CameraVie
     view
 }
 
+/// One position of the stroke, for looking at after a row: where the
+/// rower's legs, body and arms typically were with the handle there (the
+/// median of each over the strokes), drawn on their own body, beside the good
+/// stroke with the handle in the same place.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Still {
+    pub phase: Phase,
+    /// How far through the phase the handle is (`Guide::u`).
+    pub u: f64,
+    /// The rower's typical position, posed on their body: medians of where
+    /// each part was, not of the joints (those would shrink the limbs).
+    pub you: Figure,
+    /// The good stroke, exactly at `u`.
+    pub target: Figure,
+    /// Each part from its catch (0) to its finish (1).
+    pub you_parts: Parts,
+    pub ideal_parts: Parts,
+    /// Seconds into the phase when the handle was here (median).
+    pub at_s: f64,
+    /// Frames it is the median of.
+    pub frames: usize,
+}
+
+/// A still takes the frames with the handle this close to its position.
+const STILL_WIDTH: f64 = 0.05;
+/// Fewer frames than this at a position: no still there.
+const STILL_FRAMES: usize = 10;
+
+/// The rower's typical stroke at `positions` beside the good stroke, from a
+/// recording's events as the live coach saw them (`LiveTechnique`), from the
+/// frames that arrived inside `windows` (the rowing, or an interval
+/// workout's work intervals).
+pub fn filmstrip(events: &[Event], windows: &[(i64, i64)], positions: &[(Phase, f64)]) -> Vec<Still> {
+    let mut live = LiveTechnique::new();
+    let mut asm = StrokeAssembler::new();
+    // Each frame's guide and seconds into its phase.
+    let mut seen: Vec<(Guide, f64)> = Vec::new();
+    let mut phase_from: Option<(Phase, i64)> = None;
+    for ev in events {
+        if let EventKind::Pose(p) = &ev.kind {
+            live.frame(p);
+            // Every frame, in order: the guide follows the handle's direction.
+            if let Some(g) = live.figure(p).and_then(|f| live.guide(&f)) {
+                let from = match phase_from {
+                    Some((ph, t)) if ph == g.phase => t,
+                    _ => p.captured_us,
+                };
+                phase_from = Some((g.phase, from));
+                if windows.iter().any(|&(a, b)| (a..b).contains(&ev.t_us)) {
+                    seen.push((g, (p.captured_us - from) as f64 / 1e6));
+                }
+            }
+        }
+        if let Some(mut r) = asm.push(ev) {
+            live.stroke(&mut r);
+        }
+    }
+    let Some(body) = live.body.as_ref() else { return Vec::new() };
+    positions
+        .iter()
+        .filter_map(|&(phase, u)| {
+            let near: Vec<&(Guide, f64)> =
+                seen.iter().filter(|(g, _)| g.phase == phase && (g.u - u).abs() <= STILL_WIDTH).collect();
+            if near.len() < STILL_FRAMES {
+                return None;
+            }
+            let you = median_parts(near.iter().map(|(g, _)| g.you));
+            Some(Still {
+                phase,
+                u,
+                you: body.pose(you),
+                target: body.pose(path(phase, u)),
+                you_parts: you,
+                ideal_parts: path(phase, u),
+                at_s: median(near.iter().map(|(_, s)| *s).collect()).unwrap_or(f64::NAN),
+                frames: near.len(),
+            })
+        })
+        .collect()
+}
+
+fn median_parts(parts: impl Iterator<Item = Parts>) -> Parts {
+    let parts: Vec<Parts> = parts.collect();
+    let of = |pick: fn(&Parts) -> f64| median(parts.iter().map(pick).collect()).unwrap_or(f64::NAN);
+    Parts {
+        legs: of(|p| p.legs),
+        body: of(|p| p.body),
+        arms: of(|p| p.arms),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -782,6 +873,39 @@ mod tests {
                 assert!(rate(&strokes, other) < 0.1, "{sim:?} also tripped {other:?}: {}", rate(&strokes, other));
             }
         }
+    }
+
+    #[test]
+    fn the_filmstrip_shows_the_simulated_rower_against_the_good_stroke() {
+        let stills = |fault: Option<SimFault>| {
+            let cfg = SimConfig {
+                pose: Some(PoseSim {
+                    fault,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let events = generate(cfg, T0, Duration::from_secs(120));
+            let rowing = [(T0 + 10_000_000, T0 + 120_000_000)];
+            let at = [(Phase::Drive, 0.3), (Phase::Recovery, 0.35), (Phase::Recovery, 0.65)];
+            filmstrip(&events, &rowing, &at)
+        };
+        let clean = stills(None);
+        assert_eq!(clean.len(), 3, "a still at each position");
+        for s in &clean {
+            let gap = |a: f64, b: f64| (a - b).abs();
+            let (y, i) = (s.you_parts, s.ideal_parts);
+            assert!(gap(y.legs, i.legs) < 0.2 && gap(y.body, i.body) < 0.2, "clean rowing off the good stroke at {:?} {}: {y:?} vs {i:?}", s.phase, s.u);
+            assert!(s.frames >= 10 && s.you.len() == s.target.len());
+        }
+        // Swinging early: the back is already going with the legs half down.
+        let early_body = stills(Some(SimFault::EarlyBody));
+        let s = &early_body[0];
+        assert!(s.you_parts.body - s.ideal_parts.body > 0.2, "{:?} vs {:?}", s.you_parts, s.ideal_parts);
+        // Knees up early: the legs are well on their way with the body just over.
+        let early_knees = stills(Some(SimFault::EarlyKnees));
+        let s = &early_knees[1];
+        assert!(s.ideal_parts.legs - s.you_parts.legs > 0.2, "{:?} vs {:?}", s.you_parts, s.ideal_parts);
     }
 
     #[test]

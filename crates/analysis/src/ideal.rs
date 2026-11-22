@@ -115,7 +115,7 @@ fn dist(a: P, b: P) -> f64 {
     (a.0 - b.0).hypot(a.1 - b.1)
 }
 
-fn median(mut v: Vec<f64>) -> Option<f64> {
+pub(crate) fn median(mut v: Vec<f64>) -> Option<f64> {
     v.sort_by(f64::total_cmp);
     v.get(v.len() / 2).copied()
 }
@@ -305,6 +305,7 @@ impl Body {
         let (you, ideal) = (self.parts(fig)?, path(phase, u));
         Some(Guide {
             phase,
+            u,
             step: step(phase, u),
             off: Off {
                 legs: (you.legs - ideal.legs).abs() > TOLERANCE.legs,
@@ -343,6 +344,9 @@ impl Body {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Guide {
     pub phase: Phase,
+    /// How far through the phase the handle is, by the good stroke's travel:
+    /// 0 at its start, 1 at its end.
+    pub u: f64,
     pub step: Step,
     pub you: Parts,
     pub ideal: Parts,
