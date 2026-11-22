@@ -73,6 +73,9 @@ pub enum Cue {
     Rest,
     /// The next work interval is close.
     Soon,
+    /// The pace changed, for heart rate: a stroke slower while it stays over
+    /// the ceiling (pressing lighter first), back up once it's well under.
+    Pace { rate: f64, slower: bool },
 }
 
 impl Cue {
@@ -102,13 +105,15 @@ impl Cue {
             }
             Self::Rest => "Rest. Paddle easy.".into(),
             Self::Soon => "Ten seconds.".into(),
+            Self::Pace { rate, slower: true } => format!("Lighter, and slower. Rate {rate:.0}."),
+            Self::Pace { rate, slower: false } => format!("Back up to rate {rate:.0}."),
         }
     }
 
     fn kind(&self) -> usize {
         match self {
             Self::HeartHigh { .. } => 0,
-            Self::RateUp { .. } | Self::RateDown { .. } => 1,
+            Self::RateUp { .. } | Self::RateDown { .. } | Self::Pace { .. } => 1,
             Self::Harder { .. } | Self::Easier { .. } => 2,
             Self::Halfway | Self::Time | Self::Go { .. } | Self::Rest | Self::Soon => 3,
         }
@@ -123,6 +128,75 @@ pub const SETTLE_S: f64 = 60.0;
 pub const WORK_SETTLE_S: f64 = 30.0;
 /// The call before each work interval after the first comes this early.
 pub const SOON_S: f64 = 10.0;
+/// Heart rate over the ceiling this long: a stroke slower.
+pub const PACE_OVER_S: f64 = 30.0;
+/// Heart rate this far under the ceiling for `PACE_UNDER_S`: a stroke back up.
+pub const PACE_UNDER_BPM: f64 = 5.0;
+pub const PACE_UNDER_S: f64 = 60.0;
+/// At most one change of pace this often: heart rate follows the work a
+/// minute or so late, and quicker steps would chase it up and down.
+pub const PACE_EVERY_S: f64 = 75.0;
+
+/// The rate to row at (the pace ghost's) for a part with a rate band and a
+/// heart-rate ceiling (easy and steady rows, the 4×4's work): the band's
+/// middle, a stroke lower at a time while heart rate stays over the ceiling,
+/// back up once it's well under. Never outside the band, never above where
+/// it started: a quicker rate to push heart rate up is no rule of these
+/// workouts. Tests and fixed-rate work (no ceiling) keep their rate.
+#[derive(Debug, Clone, Copy)]
+struct Pace {
+    start: f64,
+    floor: f64,
+    rate: f64,
+    over_since: Option<i64>,
+    under_since: Option<i64>,
+    changed_us: Option<i64>,
+}
+
+impl Pace {
+    fn new(t: &Targets) -> Option<Self> {
+        let (lo, hi) = t.rate?;
+        t.hr_max?;
+        let start = ((lo + hi) / 2.0).round();
+        Some(Self {
+            start,
+            floor: lo.ceil().min(start),
+            rate: start,
+            over_since: None,
+            under_since: None,
+            changed_us: None,
+        })
+    }
+
+    /// The median heart rate of the last strokes, against the ceiling.
+    fn update(&mut self, hr: f64, max: f64, now: i64) -> Option<Cue> {
+        let held = |since: i64| (now - since) as f64 / 1e6;
+        let free = self.changed_us.is_none_or(|t| held(t) >= PACE_EVERY_S);
+        if hr > max {
+            self.under_since = None;
+            let over = *self.over_since.get_or_insert(now);
+            if held(over) >= PACE_OVER_S && free && self.rate > self.floor {
+                self.rate -= 1.0;
+                self.changed_us = Some(now);
+                self.over_since = Some(now);
+                return Some(Cue::Pace { rate: self.rate, slower: true });
+            }
+        } else if hr <= max - PACE_UNDER_BPM {
+            self.over_since = None;
+            let under = *self.under_since.get_or_insert(now);
+            if held(under) >= PACE_UNDER_S && free && self.rate < self.start {
+                self.rate += 1.0;
+                self.changed_us = Some(now);
+                self.under_since = Some(now);
+                return Some(Cue::Pace { rate: self.rate, slower: false });
+            }
+        } else {
+            self.over_since = None;
+            self.under_since = None;
+        }
+        None
+    }
+}
 /// Quiet time after any correction.
 pub const COOLDOWN_S: f64 = 30.0;
 /// The same correction isn't repeated sooner than this.
@@ -150,6 +224,8 @@ pub struct Pacer {
     called: usize,
     /// The part the last stroke was in: a new part starts a fresh median.
     part: Option<(Stage, u32)>,
+    /// This part's pace, when it adapts to heart rate.
+    pace: Option<Pace>,
 }
 
 impl Pacer {
@@ -162,6 +238,7 @@ impl Pacer {
             go_us: None,
             called: 0,
             part: None,
+            pace: None,
         }
     }
 
@@ -188,14 +265,32 @@ impl Pacer {
         self.position(now_us).is_some_and(|p| p.stage != Stage::Done)
     }
 
-    /// What the rower aims for now: the piece's or the work interval's
-    /// targets; none in a rest, before Go or after the end.
-    pub fn targets(&self, now_us: i64) -> Option<&Targets> {
+    /// The part's own targets; none in a rest, before Go or after the end.
+    fn part_targets(&self, now_us: i64) -> Option<&Targets> {
         let p = self.position(now_us)?;
         match (&self.workout, p.stage) {
             (Workout::Piece { targets, .. }, Stage::Work) => Some(targets),
             (Workout::Intervals { work, .. }, Stage::Work) => work.get(p.n as usize - 1),
             _ => None,
+        }
+    }
+
+    /// What the rower aims for now: the piece's or the work interval's
+    /// targets, the rate band round the pace when it has moved.
+    pub fn targets(&self, now_us: i64) -> Option<Targets> {
+        let mut t = self.part_targets(now_us)?.clone();
+        if let (Some(pace), Some((lo, hi))) = (self.pace, t.rate) {
+            let half = (hi - lo) / 2.0;
+            t.rate = Some(((pace.rate - half).max(lo), (pace.rate + half).min(hi)));
+        }
+        Some(t)
+    }
+
+    /// The rhythm to row at now: the pace's, else the targets' own.
+    pub fn rhythm(&self, now_us: i64) -> Option<Rhythm> {
+        match self.pace {
+            Some(p) if self.part_targets(now_us).is_some() => Some(Rhythm::at(p.rate)),
+            _ => self.part_targets(now_us)?.rhythm(),
         }
     }
 
@@ -251,6 +346,8 @@ impl Pacer {
             self.part = Some((p.stage, p.n));
             // A median across two parts would say nothing about either.
             self.recent.clear();
+            // Each part starts at its own pace.
+            self.pace = self.part_targets(now).and_then(Pace::new);
         }
         if self.recent.len() == WINDOW {
             self.recent.pop_front();
@@ -273,6 +370,14 @@ impl Pacer {
         if p.stage != Stage::Work || into_part < settle || self.recent.len() < WINDOW {
             return None;
         }
+        // A change of pace, for heart rate, gets through: it comes at most
+        // once every `PACE_EVERY_S`.
+        let max = self.part_targets(now).and_then(|t| t.hr_max);
+        if let (Some(max), Some(hr)) = (max, self.median(|r| r.hr))
+            && let Some(cue) = self.pace.as_mut().and_then(|pace| pace.update(hr, max, now))
+        {
+            return Some(self.said(cue, now));
+        }
         if self.last_any_us.is_some_and(|t| (now - t) as f64 / 1e6 < COOLDOWN_S) {
             return None;
         }
@@ -282,15 +387,18 @@ impl Pacer {
     }
 
     /// Most important correction first: heart rate, then rate, then power.
+    /// The median of the last strokes' values, when at least half have one.
+    fn median(&self, pick: fn(&Recent) -> Option<f64>) -> Option<f64> {
+        let mut xs: Vec<f64> = self.recent.iter().filter_map(pick).collect();
+        if xs.len() < WINDOW / 2 {
+            return None;
+        }
+        xs.sort_by(f64::total_cmp);
+        Some(xs[xs.len() / 2])
+    }
+
     fn correction(&self, now_us: i64) -> Option<Cue> {
-        let median = |pick: fn(&Recent) -> Option<f64>| {
-            let mut xs: Vec<f64> = self.recent.iter().filter_map(pick).collect();
-            if xs.len() < WINDOW / 2 {
-                return None;
-            }
-            xs.sort_by(f64::total_cmp);
-            Some(xs[xs.len() / 2])
-        };
+        let median = |pick: fn(&Recent) -> Option<f64>| self.median(pick);
         let t = self.targets(now_us)?;
         if let (Some(max), Some(hr)) = (t.hr_max, median(|r| r.hr))
             && hr > max
@@ -610,6 +718,93 @@ mod tests {
         fn the_heart_ceiling_eases_a_bout_off() {
             let (_, cues) = row(hard(2), 26.0, 110.0, 180.0);
             assert!(cues.iter().any(|(_, c)| matches!(c, Cue::HeartHigh { bpm } if *bpm == 180.0)));
+        }
+    }
+
+    mod pace {
+        use super::super::*;
+        use crate::session::tests::{T0, steady};
+        use crate::workout::Kind;
+
+        const S: i64 = 1_000_000;
+
+        fn easy() -> Workout {
+            Workout::Piece {
+                minutes: Some(30.0),
+                targets: Targets {
+                    rate: Some((17.5, 20.5)),
+                    watts: None,
+                    hr_max: Some(154.0),
+                },
+            }
+        }
+
+        /// Strokes 3 s apart from Go at T0, heart rate by the second.
+        fn row(w: Workout, minutes: u32, hr: impl Fn(f64) -> f64) -> (Pacer, Vec<(f64, Cue)>) {
+            let mut p = Pacer::new(w);
+            p.start(T0);
+            let strokes = steady(minutes * 20, 3.0, 60.0, |i| hr(i as f64 * 3.0));
+            let cues = strokes
+                .iter()
+                .filter_map(|s| p.stroke(s).map(|c| ((s.t_next_catch_us.unwrap() - T0) as f64 / 1e6, c)))
+                .filter(|(_, c)| matches!(c, Cue::Pace { .. }))
+                .collect();
+            (p, cues)
+        }
+
+        #[test]
+        fn heart_rate_held_over_the_ceiling_slows_the_pace_a_stroke_to_its_floor() {
+            let (p, cues) = row(easy(), 8, |_| 160.0);
+            assert_eq!(cues.len(), 1, "19 to 18, the floor: {cues:?}");
+            let (at, cue) = cues[0];
+            assert_eq!(cue, Cue::Pace { rate: 18.0, slower: true });
+            assert!(at >= SETTLE_S + PACE_OVER_S - 3.0, "not before it's been over a while: {at}");
+            assert_eq!(cue.text(), "Lighter, and slower. Rate 18.");
+            let now = T0 + 300 * S;
+            assert_eq!(p.rhythm(now).map(|r| r.rate), Some(18.0), "the ghost rows the new pace");
+            assert_eq!(p.targets(now).unwrap().rate, Some((17.5, 19.5)), "the band moves with it, inside its own");
+        }
+
+        #[test]
+        fn and_comes_back_up_once_heart_rate_is_well_under() {
+            let (p, cues) = row(easy(), 10, |t| if t < 180.0 { 160.0 } else { 145.0 });
+            let rates: Vec<(f64, bool)> = cues.iter().map(|(_, c)| match c {
+                Cue::Pace { rate, slower } => (*rate, *slower),
+                _ => unreachable!(),
+            }).collect();
+            assert_eq!(rates, [(18.0, true), (19.0, false)]);
+            assert!(cues[1].0 - cues[0].0 >= PACE_EVERY_S, "{cues:?}");
+            assert!(cues[1].0 >= 180.0 + PACE_UNDER_S - 3.0, "{cues:?}");
+            assert_eq!(p.rhythm(T0 + 590 * S).map(|r| r.rate), Some(19.0), "never above where it started");
+        }
+
+        #[test]
+        fn a_test_keeps_its_rate_whatever_the_heart_rate() {
+            let (p, cues) = row(Kind::Reference.workout(None, None), 8, |_| 175.0);
+            assert!(cues.is_empty());
+            assert_eq!(p.rhythm(T0 + 300 * S).map(|r| r.rate), Some(20.0));
+        }
+
+        #[test]
+        fn a_four_by_four_steps_down_near_its_ceiling_and_starts_each_interval_afresh() {
+            let h = crate::zones::HeartProfile::new(73.0, 188.0, None).unwrap();
+            let mut p = Pacer::new(Kind::FourByFour.workout(Some(&h), None));
+            p.start(T0);
+            // Each work interval rowed at rate 23, heart rate 182 (over 179) throughout.
+            let strokes: Vec<StrokeRecord> = steady(4 * 25 * 7, 60.0 / 23.0, 100.0, |_| 182.0)
+                .into_iter()
+                .filter(|s| p.position(s.t_next_catch_us.unwrap()).is_some_and(|x| x.stage == Stage::Work))
+                .collect();
+            let mut paces = Vec::new();
+            for s in &strokes {
+                if let Some(Cue::Pace { rate, .. }) = p.stroke(s) {
+                    let n = p.position(s.t_next_catch_us.unwrap()).unwrap().n;
+                    paces.push((n, rate));
+                }
+            }
+            assert_eq!(&paces[..2], [(1, 22.0), (1, 21.0)], "{paces:?}");
+            assert!(paces.iter().any(|&(n, r)| n == 2 && r == 22.0), "the next interval starts at 23 again: {paces:?}");
+            assert!(paces.iter().all(|&(_, r)| r >= 20.0), "never under the band");
         }
     }
 

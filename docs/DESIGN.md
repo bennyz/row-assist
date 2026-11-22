@@ -333,28 +333,30 @@ The front screen shows the rower's own position, drawn from landmarks (no video 
   no-feedback blocks to check the fix stuck. The planner schedules these.
 
 **Built:** the row screen (`/`, also `/mirror`), fed by `/ws/live` from `rowctl serve` (or
-`record --camera`), sized to fit one laptop screen read from the erg:
+`record --camera`), sized to fit one laptop screen read from the erg. Since 2026-11-22 it is
+deliberately sparse (the rower found the step labels, part bars, rhythm bar and every-fault list
+confusing): the live figure, the **pace ghost**, three numbers, the coach's words and the day's one
+focus. The last stroke's order and frozen catch and finish show in rests and between rows; the
+review page has the rest.
 - **Live figure** drawn from where the feet rest (the median ankle, `LiveTechnique::figure`),
   so it holds still while the seat slides; framed to the rower's own range of movement.
-- **Target body** behind it (§5.4): the good stroke's body with the handle where the rower's
-  is, so every part has somewhere to be at every point of the stroke. A part away from its
-  target is drawn red and heavier; the handle's line carries the good stroke's catch and
-  finish, so a stroke that stops short shows.
-- **Steps**: Legs, Body, Arms, then Arms away, Body over, Slide, with the one the good stroke
-  is in lit.
-- **Now**: the legs, the body and the arms as three bars from catch to finish, each with a
-  tick where it should be, and "early" or "late" beside one that is off.
-- **Rhythm bar**: the target drive and recovery with a marker for now, and the last stroke's,
-  by the camera; "Slow the slide" when the recovery is 0.25 s or more short. Timing is only
-  here: the target body moves with the rower, not with the clock.
-- **Numbers against targets** (`LiveMsg::Targets`, every second): rate, watts and heart rate,
-  each with its band and which way to go. Heart rate first: "harder" isn't shown while it's
-  over the ceiling.
-- Beside it, the last stroke: the order it was rowed in (§5.4), and its catch and finish frozen
-  over the median of the last 20 strokes (dropped on a screen under 1000 px high, so the page
-  never scrolls mid-row). Under it, the coach's cue as a banner, else what the last stroke
-  showed with what to do about each ("Early body: Legs, then swing"); a "Numbers only" switch
-  for the no-feedback blocks. Only figures travel, never video.
+- **Pace ghost**: the good stroke on the rower's body (`Target::path`, every 2.5% of the
+  handle's travel through each phase) rowed at the rhythm to row at, from each of the rower's
+  catches on the live figure's own clock (`StrokeClock`, so it shares the camera's delay): the
+  drive at the rhythm's drive time (handle speeding up then easing into the finish), the
+  recovery at its recovery time (hands away and body over quickly, then a slow slide); late, it
+  waits at the catch. Rowing with it, the rower overlaps it; where they differ is the order the
+  legs, body and arms move in (the faults of §5.4) or the timing, with one word under it ("On
+  rhythm" / "Slow the slide"). Before Go it rows at the rower's own rate; it sits out rests. Always
+  on, by the rower's choice (Fable, a second model advising, suggested doses after §5.3's guidance
+  hypothesis; the rower preferred it always there).
+- **Its rate is the coach's** (`cues::Pacer::rhythm`): fixed for the tests and rate steps; for a
+  part with a rate band and a heart-rate ceiling (easy and steady rows, the 4×4's work) a stroke
+  slower ("Lighter, and slower. Rate 18.") when heart rate has stayed over the ceiling 30 s, at most
+  every 75 s, never under the band; back up a stroke once it has been 5 bpm under for a minute,
+  never above where it started (no quicker rate to push heart rate up). The rate band of the
+  corrections moves with it. Pressure isn't the ghost's: the watts number and "harder"/"ease off"
+  stay, and "harder" stays blocked over the ceiling.
 
 ### 5.4 The good stroke, position by position
 

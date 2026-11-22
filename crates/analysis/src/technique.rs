@@ -525,10 +525,15 @@ impl LiveTechnique {
     pub fn target(&self) -> Option<Target> {
         let body = self.body.as_ref()?;
         let (catch, finish) = body.ends();
+        let through = |phase: Phase| (0..=PATH_STEPS).map(|k| body.pose(path(phase, k as f64 / PATH_STEPS as f64))).collect();
         Some(Target {
             catch,
             finish,
             sequence: body.sequence(),
+            path: Path {
+                drive: through(Phase::Drive),
+                recovery: through(Phase::Recovery),
+            },
         })
     }
 
@@ -608,7 +613,20 @@ pub struct Target {
     pub catch: Figure,
     pub finish: Figure,
     pub sequence: Sequence,
+    /// The body through each phase, every `1 / PATH_STEPS` of the handle's
+    /// travel: what the row screen's pace ghost rows.
+    pub path: Path,
 }
+
+/// The good stroke's body through the drive and through the recovery.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Path {
+    pub drive: Vec<Figure>,
+    pub recovery: Vec<Figure>,
+}
+
+/// Steps the pace ghost's path is drawn in, per phase.
+pub const PATH_STEPS: usize = 40;
 
 /// The good stroke's order for the rower of these strokes, from their
 /// catches and finishes: what the review holds each stroke's sequence
@@ -906,6 +924,30 @@ mod tests {
         let early_knees = stills(Some(SimFault::EarlyKnees));
         let s = &early_knees[1];
         assert!(s.ideal_parts.legs - s.you_parts.legs > 0.2, "{:?} vs {:?}", s.you_parts, s.ideal_parts);
+    }
+
+    #[test]
+    fn the_pace_ghost_s_path_runs_catch_to_finish_and_back() {
+        let cfg = SimConfig {
+            pose: Some(PoseSim::default()),
+            ..Default::default()
+        };
+        let mut live = LiveTechnique::new();
+        let mut asm = StrokeAssembler::new();
+        for ev in generate(cfg, T0, Duration::from_secs(30)) {
+            if let EventKind::Pose(p) = &ev.kind {
+                live.frame(p);
+            }
+            if let Some(mut r) = asm.push(&ev) {
+                live.stroke(&mut r);
+            }
+        }
+        let t = live.target().expect("a body after 30 s of rowing");
+        assert_eq!((t.path.drive.len(), t.path.recovery.len()), (PATH_STEPS + 1, PATH_STEPS + 1));
+        assert_eq!(t.path.drive[0], t.catch);
+        assert_eq!(t.path.drive[PATH_STEPS], t.finish);
+        assert_eq!(t.path.recovery[0], t.finish, "the recovery starts where the drive ends");
+        assert_eq!(t.path.recovery[PATH_STEPS], t.catch);
     }
 
     #[test]

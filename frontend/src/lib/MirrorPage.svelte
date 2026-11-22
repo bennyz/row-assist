@@ -1,10 +1,11 @@
 <script>
-  // The row screen, in front of the erg: your body live over the good
-  // stroke's body for where your handle is (so every part of you has
-  // somewhere to be at every point of the stroke, at any speed), the step of
-  // the stroke you are in, each part beside its target, a rhythm bar for the
-  // timing, the numbers against their targets, and the last stroke: the
-  // order it was rowed in, and its catch and finish frozen.
+  // The row screen, in front of the erg: your body live beside a pace ghost,
+  // the good stroke on your body rowed at the rhythm to row at from each of
+  // your catches (row with it: where you differ is the order your legs, body
+  // and arms move in, or your timing), the numbers against their targets, and
+  // in rests and between rows the last stroke: the order it was rowed in, and
+  // its catch and finish frozen. The ghost's rate is the coach's, which
+  // slows when heart rate stays over a ceiling.
   // With `rowctl serve` it also shows the row's state and devices, the next
   // row's plan before the first stroke, and the phone's code while no camera
   // is connected; when a row is saved it hands over to the review
@@ -13,15 +14,13 @@
   import { onDestroy, onMount } from 'svelte';
   import { BONES } from './pose.js';
   import CameraStill from './CameraStill.svelte';
-  import { FAULTS, PARTS, STEPS } from './format.js';
+  import { FAULTS } from './format.js';
   import { stopRow } from './api.js';
   import Figures from './Figures.svelte';
   import Gauge from './Gauge.svelte';
   import MarkBar from './MarkBar.svelte';
   import NextRow from './NextRow.svelte';
-  import PartBars from './PartBars.svelte';
   import PhoneSetup from './PhoneSetup.svelte';
-  import RhythmBar from './RhythmBar.svelte';
   import RowBar from './RowBar.svelte';
   import Sequence from './Sequence.svelte';
   import { StrokeClock, WRIST, rhythmAt } from './strokeclock.js';
@@ -38,12 +37,8 @@
   const EXTENT_EVERY = 30;
   // Longer than this since the last catch: not rowing, no place in the rhythm.
   const IDLE_S = 8;
-  // A part that is off stays red on the figure this long (a frame or two is
-  // too quick to see), and named beside its bar this long (to be read).
-  const OFF_SHOWN_MS = 150;
-  const OFF_NAMED_MS = 600;
-  // Which part of the stroke each bone belongs to (joints as in pose.js).
-  const BONE_PART = { '4-5': 'legs', '5-6': 'legs', '1-4': 'body', '0-1': 'body', '1-2': 'arms', '2-3': 'arms' };
+  // Recovery this much shorter than the ghost's: "slow the slide".
+  const RUSHED_S = 0.25;
 
   let mode = $state(readMode());
   let link = $state('connecting');
@@ -63,13 +58,8 @@
   let note = $state(null);
   // What the row aims for: bands, and the rhythm at the target rate.
   let targets = $state(null);
-  // This frame against the good stroke: its body with the handle where
-  // yours is, the step, and each part beside its target.
-  let guide = $state(null);
   // The good stroke on your body: its catch and finish, and its order.
   let target = $state(null);
-  // The parts that were off lately: which way, and when last.
-  let held = $state({});
   // How far you actually move (recent frames), so the view never cuts you off.
   let extent = $state(null);
   let now = $state(performance.now());
@@ -109,8 +99,6 @@
         live = m.live;
       } else if (m.type === 'figure') {
         joints = m.joints;
-        guide = m.guide;
-        if (m.guide) hold(m.guide);
         recent.push(m.joints);
         if (recent.length > EXTENT_FRAMES) recent.shift();
         seen += 1;
@@ -152,15 +140,6 @@
     };
   }
 
-  /** Mark the parts this frame has off: early if ahead of the target in the way the phase goes, else late. */
-  function hold(g) {
-    const way = g.phase === 'drive' ? 1 : -1;
-    const at = performance.now();
-    for (const part of Object.keys(PARTS)) {
-      if (g.off[part]) held[part] = { word: (g.you[part] - g.ideal[part]) * way > 0 ? 'early' : 'late', at };
-    }
-  }
-
   /** The box your recent frames fill, ignoring the odd stray point. */
   function reach(frames) {
     const xs = [];
@@ -197,13 +176,44 @@
   // Seconds since your last catch, while rowing: your place in the rhythm.
   const since = $derived(catchAt == null ? null : (now - catchAt) / 1000);
   const rowing = $derived(since != null && since < IDLE_S);
-  // The good stroke's body with the handle where yours is: it moves as you
-  // do, so where it differs from you is a part in the wrong place.
-  const ghost = $derived(me ? (guide?.target ?? null) : null);
-  // The parts off within the last `ms`: part → early | late.
-  const offWithin = (ms) => Object.fromEntries(Object.entries(held).filter(([, h]) => now - h.at < ms).map(([p, h]) => [p, h.word]));
-  const off = $derived(offWithin(OFF_SHOWN_MS));
-  const named = $derived(offWithin(OFF_NAMED_MS));
+  // Where the workout is (none before Go); the ghost sits out the rests.
+  const position = $derived(targets?.position ?? null);
+  // The pace ghost: the good stroke on your body, from your last catch at the
+  // rhythm to row at (on the live figure's own clock, so it shares its
+  // delay). Rowing with it, you overlap; rushing the slide, it is still
+  // coming forward when you catch; late, it waits at the catch.
+  const paceGhost = $derived.by(() => {
+    const path = target?.path;
+    if (!path || !rhythm || !me || position?.stage === 'rest') return null;
+    const atCatch = path.recovery[path.recovery.length - 1];
+    if (!rowing) return atCatch;
+    if (since < rhythm.drive_s) return along(path.drive, driveEase(since / rhythm.drive_s));
+    const r = since - rhythm.drive_s;
+    return r < rhythm.recovery_s ? along(path.recovery, recoveryEase(r / rhythm.recovery_s)) : atCatch;
+  });
+  // The handle through the drive: speeding up, then easing into the finish.
+  const driveEase = (x) => x * x * (3 - 2 * x);
+  // Through the recovery: hands away and body over quickly, then a slow slide.
+  const recoveryEase = (x) => 1 - (1 - x) ** 1.6;
+  /** The figure `u` of the way along a path of figures, between its steps. */
+  function along(frames, u) {
+    const k = Math.min(frames.length - 1, Math.max(0, u) * (frames.length - 1));
+    const i = Math.floor(k);
+    const a = frames[i];
+    const b = frames[Math.min(i + 1, frames.length - 1)];
+    const f = k - i;
+    return a.map((p, j) => (p && b[j] ? [p[0] + (b[j][0] - p[0]) * f, p[1] + (b[j][1] - p[1]) * f] : p));
+  }
+  // One word on the timing, from your last stroke: rushing the slide is the fault.
+  const timing = $derived.by(() => {
+    if (!rhythm || !rowing || !last?.recovery_s) return null;
+    const short = rhythm.recovery_s - last.recovery_s;
+    return short > RUSHED_S
+      ? { tone: 'warn', text: `Slow the slide: ${short.toFixed(1)} s more coming forward` }
+      : { tone: 'ok', text: 'On rhythm' };
+  });
+  // The last stroke's order and frozen figures: for rests and between rows.
+  const showLast = $derived(!rowing || position?.stage === 'rest');
 
   // Framed to the target's catch and finish, so nothing sits at an edge.
   const view = $derived.by(() => {
@@ -233,11 +243,11 @@
       ? BONES.filter(([a, b]) => fig[a] && fig[b]).map(([a, b]) => {
           const [x1, y1] = px(fig[a]);
           const [x2, y2] = px(fig[b]);
-          return { x1, y1, x2, y2, key: `${a}-${b}`, part: BONE_PART[`${a}-${b}`] };
+          return { x1, y1, x2, y2, key: `${a}-${b}` };
         })
       : [];
   const bones = $derived(lines(me));
-  const ghostBones = $derived(lines(ghost));
+  const ghostBones = $derived(lines(paceGhost));
 
   // Heart rate first: never "harder" while it's over the ceiling.
   const hrCeiling = $derived(targets?.hr_max != null ? Math.round(targets.hr_max) : null);
@@ -251,7 +261,7 @@
   const faults = $derived(last?.faults ?? []);
 </script>
 
-<div class="mirror">
+<div class="mirror" class:wide={mode === 'mirror' && row?.phase === 'rowing' && !showLast && !(setup && !setup.ok) && !note}>
   <header>
     {#if row}<RowBar {row} position={targets?.position} onstop={stopRow} />{/if}
     <div class="top">
@@ -280,7 +290,7 @@
     <p class="state">Row Assist isn’t running. Start it with <code>rowctl serve</code>.</p>
   {:else if mode === 'mirror'}
     <div class="stage">
-      <svg viewBox="0 0 {W} {H}" role="img" aria-label="Your body now, over where the good stroke has it with the handle where yours is">
+      <svg viewBox="0 0 {W} {H}" role="img" aria-label="Your body now, beside the good stroke rowed at the rhythm to row at">
         <line class="floor" x1="0" x2={W} y1={px([0, floorY])[1]} y2={px([0, floorY])[1]} />
         {#if rail && me}
           <line class="rail" x1={rail.catch[0]} y1={rail.catch[1]} x2={rail.finish[0]} y2={rail.finish[1]} />
@@ -293,33 +303,19 @@
           <line class="ghost" x1={b.x1} y1={b.y1} x2={b.x2} y2={b.y2} />
         {/each}
         {#each bones as b (b.key)}
-          <line class="bone" class:off={b.part && off[b.part]} x1={b.x1} y1={b.y1} x2={b.x2} y2={b.y2} />
+          <line class="bone" x1={b.x1} y1={b.y1} x2={b.x2} y2={b.y2} />
         {/each}
         {#each (me ?? []).filter(Boolean) as p, i (i)}
           {@const [x, y] = px(p)}
           <circle class="joint" cx={x} cy={y} r="9" />
         {/each}
       </svg>
-      {#if ghost}
+      {#if paceGhost}
         <p class="legend">
-          <span class="key you"></span>You <span class="key target"></span>Where you should be with the handle there
+          <span class="key you"></span>You <span class="key target"></span>Row with the grey figure: rate {Math.round(rhythm.rate)}
         </p>
       {/if}
-      {#if guide && me}
-        <div class="steps" role="img" aria-label="The step of the stroke you are in">
-          {#each Object.entries(STEPS) as [phase, steps] (phase)}
-            <div class="group" class:now={guide.phase === phase}>
-              <span class="phase">{phase === 'drive' ? 'Drive' : 'Recovery'}</span>
-              {#each steps as [key, label] (key)}
-                <span class="step" class:on={guide.phase === phase && guide.step === key}>{label}</span>
-              {/each}
-            </div>
-          {/each}
-        </div>
-      {/if}
-      {#if rhythm && me}
-        <RhythmBar {rhythm} sinceCatch={rowing ? since : null} last={last?.drive_s ? last : null} />
-      {/if}
+      {#if timing}<p class="timing {timing.tone}">{timing.text}</p>{/if}
       {#if !me}
         {#if row && row.devices.camera.connected !== true}
           <div class="overlay"><PhoneSetup /></div>
@@ -346,15 +342,9 @@
         <CameraStill />
       {/if}
       {#if note}<p class="note">{note}</p>{/if}
-      {#if guide && me}
-        <section class="now">
-          <h2>Now</h2>
-          <PartBars {guide} off={named} />
-        </section>
-      {/if}
       {#if row?.phase === 'ready' && row.plan}
         <NextRow plan={row.plan} watchAt={row.watch_at_us} />
-      {:else}
+      {:else if showLast}
       <h2>Last stroke</h2>
       {#if frozen}
         {#if target}
@@ -373,12 +363,6 @@
   <footer>
     {#if cue}
       <p class="cue">{cue}</p>
-    {:else if faults.length}
-      <p class="faults">
-        {#each faults as f (f.fault)}
-          <span><strong>{FAULTS[f.fault]?.label ?? f.fault}</strong> {f.cue}</span>
-        {/each}
-      </p>
     {/if}
     {#if focus?.fault}
       <p class="focus">Focus: {FAULTS[focus.fault]?.label} — <span>{focus.cue}</span></p>
@@ -438,13 +422,31 @@
     position: relative;
     align-self: start;
   }
+  /* Rowing, with nothing beside it: the figure and its ghost take the width. */
+  .mirror.wide {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mirror.wide aside {
+    display: none;
+  }
+  .timing {
+    margin: 0.75rem 0 0;
+    font-size: 22px;
+  }
+  .timing.ok {
+    color: var(--ok);
+  }
+  .timing.warn {
+    color: var(--warn);
+  }
   svg {
     display: block;
     width: 100%;
     height: auto;
-    /* Everything on one screen, read from the erg: the figure gives way. */
-    max-height: calc(100vh - 37rem);
-    min-height: 14rem;
+    /* Everything on one screen, read from the erg: the figure gives way to
+       the numbers above it and the coach's words below. */
+    max-height: calc(100vh - 25rem);
+    min-height: 16rem;
   }
   .marks {
     margin-top: 0.75rem;
@@ -521,41 +523,6 @@
     stroke-width: 10;
     stroke-linecap: round;
   }
-  /* Off its target: heavier as well as red, and named beside its bar. */
-  .bone.off {
-    stroke: var(--bad);
-    stroke-width: 16;
-  }
-  .steps {
-    display: flex;
-    gap: 2.5rem;
-    margin-top: 0.75rem;
-    font-size: 20px;
-  }
-  .group {
-    display: flex;
-    align-items: baseline;
-    gap: 1rem;
-    color: var(--ink-3);
-  }
-  .phase {
-    font-size: 13px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-  .group.now .phase {
-    color: var(--ink-2);
-  }
-  .step {
-    padding-bottom: 0.1rem;
-    border-bottom: 3px solid transparent;
-  }
-  .step.on {
-    color: var(--ink);
-    font-weight: 600;
-    border-bottom-color: var(--accent);
-  }
-  .now,
   .order {
     margin-bottom: 1.5rem;
   }
@@ -598,19 +565,6 @@
     margin: 0;
     font: 600 44px var(--font-num);
     color: var(--accent);
-  }
-  .faults {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.25rem 2.5rem;
-    margin: 0;
-    font-size: 24px;
-    color: var(--ink-2);
-  }
-  .faults strong {
-    margin-right: 0.5rem;
-    font-weight: 600;
-    color: var(--ink);
   }
   .focus {
     margin: 0.4rem 0 0;

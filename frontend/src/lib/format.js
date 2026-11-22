@@ -126,19 +126,5 @@ export const FAULTS = {
 /** The three parts of a stroke (keys match analysis::ideal::Parts). */
 export const PARTS = { legs: 'Legs', body: 'Body', arms: 'Arms' };
 
-/** The steps of a stroke, in order (keys match analysis::ideal::Step). */
-export const STEPS = {
-  drive: [
-    ['legs', 'Legs'],
-    ['body', 'Body'],
-    ['arms', 'Arms'],
-  ],
-  recovery: [
-    ['arms_away', 'Arms away'],
-    ['body_over', 'Body over'],
-    ['slide', 'Slide'],
-  ],
-};
-
 export const faultList = (hits, form = 'label') =>
   hits?.length ? hits.map((h) => FAULTS[h.fault]?.[form] ?? h.fault).join(', ') : '';

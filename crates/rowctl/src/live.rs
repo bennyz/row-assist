@@ -462,14 +462,14 @@ impl Coach {
         if let Some(hub) = &self.screens {
             let fault = self.focus.as_ref().map(|f| f.focus());
             live::publish(hub, &LiveMsg::Focus { fault, cue: fault.map(|f| f.cue()) });
-            let none = Targets::default();
             let pacer = self.pacer.as_ref();
-            let targets = pacer.and_then(|p| p.targets(now_us)).unwrap_or(&none);
+            let targets = pacer.and_then(|p| p.targets(now_us)).unwrap_or_default();
             live::publish(
                 hub,
                 &LiveMsg::Targets {
-                    targets,
-                    rhythm: targets.rhythm(),
+                    targets: &targets,
+                    // The pace ghost's: the pace, when heart rate has moved it.
+                    rhythm: pacer.and_then(|p| p.rhythm(now_us)),
                     position: pacer.and_then(|p| p.position(now_us)),
                 },
             );
