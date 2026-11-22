@@ -228,7 +228,11 @@ pub struct StrokeAssembler {
     watts: Option<u16>,
     spm: Option<u16>,
     drag_factor: Option<u8>,
+    /// Distance rowed, carried across the PM5 resetting it (each interval of
+    /// an interval workout starts again at 0).
     distance_dm: Option<u32>,
+    raw_distance_dm: Option<u32>,
+    distance_offset_dm: u32,
     // The stroke in progress.
     catch_distance_dm: Option<u32>,
     hr_sum: f64,
@@ -246,7 +250,7 @@ impl StrokeAssembler {
         // Close the finished stroke with the values seen during it, before
         // this event's values (which belong to the next stroke) are applied.
         let closing_distance = match &ev.kind {
-            EventKind::Pm5Status(s) => s.distance_dm,
+            EventKind::Pm5Status(s) => s.distance_dm.map(|d| self.carried(d)),
             _ => None,
         };
         let done = self.curves.push(ev).map(|c| self.record(c, closing_distance));
@@ -258,7 +262,7 @@ impl StrokeAssembler {
                 self.watts = s.watts.or(self.watts);
                 self.spm = s.spm.or(self.spm);
                 self.drag_factor = s.drag_factor.or(self.drag_factor);
-                self.distance_dm = s.distance_dm.or(self.distance_dm);
+                self.distance_dm = closing_distance.or(self.distance_dm);
             }
             EventKind::Heart(h) if h.bpm > 0 && h.contact != Some(false) => {
                 self.last_hr = Some((ev.t_us, h.bpm));
@@ -280,6 +284,18 @@ impl StrokeAssembler {
     /// The stroke still in progress, if any (call at the end of a stream).
     pub fn finish(&mut self) -> Option<StrokeRecord> {
         self.curves.finish().map(|c| self.record(c, None))
+    }
+
+    /// The PM5's distance as rowed since the stream began: a drop is the PM5
+    /// starting again at 0, so what came before it is carried.
+    fn carried(&mut self, raw: u32) -> u32 {
+        if let Some(prev) = self.raw_distance_dm
+            && raw < prev
+        {
+            self.distance_offset_dm += prev;
+        }
+        self.raw_distance_dm = Some(raw);
+        self.distance_offset_dm + raw
     }
 
     pub fn orphan_points(&self) -> usize {

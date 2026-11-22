@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::strokes::StrokeRecord;
 use crate::technique::Fault;
-use crate::workout::{Stage, Workout, stage};
+use crate::workout::{IntervalClock, Stage, Workout};
+use model::Pm5Status;
 
 /// Acceptable ranges. Each is `(low, high)`, inclusive; a cue fires outside it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -137,7 +138,8 @@ pub struct Pacer {
     /// The end was called: the piece's time, or the last work interval's.
     time_said: bool,
     /// Intervals: where the PM5 is, and since when.
-    stage: Option<(Stage, i64)>,
+    clock: IntervalClock,
+    since_us: i64,
     /// Intervals: work intervals begun.
     begun: u32,
 }
@@ -163,7 +165,8 @@ impl Pacer {
             last_kind_us: [None; 4],
             halfway_said: false,
             time_said: false,
-            stage: None,
+            clock: IntervalClock::default(),
+            since_us: 0,
             begun: 0,
         }
     }
@@ -177,8 +180,8 @@ impl Pacer {
     pub fn targets(&self) -> Option<&Targets> {
         match &self.workout {
             Workout::Piece { targets, .. } => Some(targets),
-            Workout::Intervals { work, .. } => match self.stage {
-                Some((Stage::Work, _)) => work.get(self.begun as usize - 1),
+            Workout::Intervals { work, .. } => match self.clock.stage() {
+                Some(Stage::Work) if !self.time_said => work.get(self.begun as usize - 1),
                 _ => None,
             },
         }
@@ -188,7 +191,7 @@ impl Pacer {
         let Workout::Intervals { work_s, rest_s, work } = &self.workout else {
             return None;
         };
-        let (stage, since) = self.stage?;
+        let (stage, since) = (self.clock.stage()?, self.since_us);
         let length = match stage {
             Stage::Work => *work_s,
             Stage::Rest => *rest_s,
@@ -202,20 +205,19 @@ impl Pacer {
         })
     }
 
-    /// The PM5's workout state, from every status poll. For intervals, a
-    /// call when work or rest begins, and the time call when the last work
-    /// interval ends. A piece ignores it.
-    pub fn pm5(&mut self, code: u8, t_us: i64) -> Option<Cue> {
+    /// Every PM5 status poll. For intervals, a call when work or rest begins
+    /// (`IntervalClock`), and the time call when the last work interval ends
+    /// or the PM5's workout does. A piece ignores it.
+    pub fn pm5(&mut self, s: &Pm5Status, t_us: i64) -> Option<Cue> {
         let Workout::Intervals { work, .. } = &self.workout else {
             return None;
         };
         let of = work.len() as u32;
-        let now = stage(code)?;
-        let first_work = self.stage.is_none() && now != Stage::Work;
-        if self.time_said || first_work || self.stage.is_some_and(|(s, _)| s == now) {
+        let now = self.clock.poll(s)?;
+        if self.time_said {
             return None;
         }
-        self.stage = Some((now, t_us));
+        self.since_us = t_us;
         // A median across work and rest would say nothing about either.
         self.recent.clear();
         let cue = match now {
@@ -270,7 +272,7 @@ impl Pacer {
                 elapsed_s >= SETTLE_S
             }
             Workout::Intervals { .. } => {
-                matches!(self.stage, Some((Stage::Work, since)) if (now - since) as f64 / 1e6 >= WORK_SETTLE_S)
+                self.clock.stage() == Some(Stage::Work) && (now - self.since_us) as f64 / 1e6 >= WORK_SETTLE_S
             }
         };
         if self.time_said || !settled || self.recent.len() < WINDOW {
@@ -535,18 +537,25 @@ mod tests {
             let mut p = Pacer::new(Workout::Intervals { work_s: 240, rest_s: 180, work });
             let n = (60.0 * 17.0 / (60.0 / spm)) as u32;
             let strokes = steady(n, 60.0 / spm, watts, |_| hr);
-            // Work 0–240 s, rest to 420, work to 660, rest after; a poll a second.
-            let code = |t: i64| match (t - T0) / S {
-                0..240 => 4,
-                240..420 => 3,
-                420..660 => 4,
-                _ => 3,
+            // Work 0–240 s, rest to 420, work to 660, rest after; a poll a
+            // second, as a real PM5 gives them: state 4 throughout, each
+            // interval's clock counting down.
+            let left_s = |sec: i64| match sec {
+                0..240 => 240 - sec,
+                240..420 => 420 - sec,
+                420..660 => 660 - sec,
+                _ => (840 - sec).max(1),
             };
             let mut cues = Vec::new();
             let mut next = strokes.iter().peekable();
             for sec in 0..17 * 60 {
                 let t = T0 + sec * S;
-                if let Some(c) = p.pm5(code(t), t) {
+                let s = Pm5Status {
+                    workout_state: Some(4),
+                    work_time_cs: Some(left_s(sec) as u32 * 100),
+                    ..Default::default()
+                };
+                if let Some(c) = p.pm5(&s, t) {
                     cues.push((sec as f64, c));
                 }
                 while let Some(s) = next.next_if(|s| s.t_next_catch_us.unwrap_or(s.t_catch_us) <= t) {
@@ -597,18 +606,36 @@ mod tests {
             assert!(cues.iter().any(|(_, c)| matches!(c, Cue::HeartHigh { bpm } if *bpm == 180.0)));
         }
 
+        fn status(code: u8, left_s: u32) -> Pm5Status {
+            Pm5Status {
+                workout_state: Some(code),
+                work_time_cs: Some(left_s * 100),
+                ..Default::default()
+            }
+        }
+
         #[test]
-        fn a_rest_before_any_work_and_a_piece_ignore_the_pm5() {
-            let mut p = Pacer::new(Kind::FourByFour.workout(None));
-            assert_eq!(p.pm5(3, T0), None, "a rest before the first work interval");
-            assert_eq!(p.pm5(1, T0), None, "a single piece on the PM5");
-            assert!(matches!(p.pm5(4, T0 + S), Some(Cue::Go { n: 1, of: 4, .. })));
-            assert_eq!(p.pm5(4, T0 + 2 * S), None, "the same stage again");
+        fn waiting_and_a_piece_ignore_the_pm5() {
+            let mut p = Pacer::new(Kind::FourByFour.workout(None, None));
+            assert_eq!(p.pm5(&status(0, 240), T0), None, "waiting for the first stroke");
+            assert_eq!(p.pm5(&status(1, 0), T0), None, "a single piece on the PM5");
+            assert!(matches!(p.pm5(&status(4, 240), T0 + S), Some(Cue::Go { n: 1, of: 4, .. })));
+            assert_eq!(p.pm5(&status(4, 239), T0 + 2 * S), None, "the same interval");
             let now = p.interval(T0 + 61 * S).unwrap();
             assert_eq!((now.stage, now.n, now.of, now.left_s), (Stage::Work, 1, 4, 180.0));
-            let mut piece = Pacer::new(Kind::Steady.workout(None));
-            assert_eq!(piece.pm5(4, T0), None);
+            let mut piece = Pacer::new(Kind::Steady.workout(None, None));
+            assert_eq!(piece.pm5(&status(4, 240), T0), None);
             assert!(piece.interval(T0).is_none());
+        }
+
+        #[test]
+        fn stopping_early_on_the_pm5_ends_it() {
+            let mut p = Pacer::new(Kind::FourByFour.workout(None, None));
+            p.pm5(&status(4, 240), T0);
+            p.pm5(&status(4, 1), T0 + 239 * S);
+            assert_eq!(p.pm5(&status(4, 180), T0 + 240 * S), Some(Cue::Rest), "the clock starts again: a rest");
+            assert_eq!(p.pm5(&status(12, 0), T0 + 300 * S), Some(Cue::Time), "logged after one");
+            assert!(p.targets().is_none());
         }
     }
 

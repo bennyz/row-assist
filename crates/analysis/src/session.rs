@@ -13,7 +13,9 @@ use crate::zones::{HeartProfile, HeartStats, heart_stats};
 /// camera's handle timing when there is a camera.
 /// 3: each stroke's sequence (when the legs, the body and the arms moved),
 /// and the faults read from it: early body, early knees.
-pub const ANALYSIS_VERSION: u32 = 3;
+/// 4: an interval workout's work intervals (`work`), by the PM5's interval
+/// clock; distance carried across the PM5 resetting it each interval.
+pub const ANALYSIS_VERSION: u32 = 4;
 
 /// A catch-to-catch time longer than this (under 10 spm) is a pause, not a stroke.
 pub const MAX_CYCLE_S: f64 = 6.0;
@@ -98,6 +100,7 @@ pub fn work_intervals(strokes: &[StrokeRecord], windows: &[(i64, i64)]) -> Vec<W
             WorkInterval {
                 seg: segment(inside.iter().copied()),
                 hr_peak: inside.iter().filter_map(|s| s.hr_bpm).max_by(f64::total_cmp),
+                length_s: (to - from) as f64 / 1e6,
             }
         })
         .collect()
@@ -153,6 +156,8 @@ pub struct WorkInterval {
     pub seg: Segment,
     /// The highest stroke heart rate in it: where the interval ended up.
     pub hr_peak: Option<f64>,
+    /// As the PM5 timed it, start to the next interval, seconds.
+    pub length_s: f64,
 }
 
 /// `None` when there are no strokes.

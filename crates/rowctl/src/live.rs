@@ -262,7 +262,7 @@ impl Setup {
     /// The workout; `false` when `zone` needs a heart profile there isn't.
     pub fn workout(&self, heart: Option<&HeartProfile>) -> (Workout, bool) {
         let mut w = match self.kind {
-            Some(k) => k.workout(heart),
+            Some(k) => k.workout(heart, self.progression.as_ref()),
             None => Workout::Piece {
                 minutes: None,
                 targets: Targets::default(),
@@ -270,9 +270,6 @@ impl Setup {
         };
         if let Some(m) = self.minutes {
             w.set_minutes(m);
-        }
-        if let Some(p) = &self.progression {
-            w.set_power(&p.watts);
         }
         let zone_top = self.zone.map(|z| heart.and_then(|h| h.zone_bpm(z)).map(|(_, top)| top));
         for t in w.targets_mut() {
@@ -341,14 +338,14 @@ impl Coach {
         let heart = ctx.and_then(|c| c.heart()).map(|h| h.0);
         if let Some(k) = setup.kind {
             println!("{}", k.describe());
-            if let Some(pm5) = k.pm5_setup() {
-                println!("Set on the PM5: {pm5}");
-            }
         }
         if let Some(p) = &setup.progression {
             println!("{}", p.note);
         }
         let (workout, zone_ok) = setup.workout(heart.as_ref());
+        if let Some(pm5) = workout.pm5_setup() {
+            println!("Set on the PM5: {pm5}");
+        }
         if !zone_ok {
             eprintln!("--zone needs a heart profile (see rowctl profile); ignoring it");
         }
@@ -376,7 +373,7 @@ impl Coach {
 
     /// A PM5 status poll: for intervals, the call as work or rest begins.
     pub fn pm5(&mut self, s: &Pm5Status, t_us: i64) {
-        let cue = s.workout_state.zip(self.pacer.as_mut()).and_then(|(code, p)| p.pm5(code, t_us));
+        let cue = self.pacer.as_mut().and_then(|p| p.pm5(s, t_us));
         if let Some(c) = cue {
             self.cue(&c.text());
         }

@@ -124,13 +124,13 @@ mod tests {
 
     #[test]
     fn descriptions() {
-        assert_eq!(describe_workout(&Kind::Reference.workout(None)), "rate 19–21, 48–58 W, 20 min");
+        assert_eq!(describe_workout(&Kind::Reference.workout(None, None)), "rate 19–21, 48–58 W, 20 min");
         let h = analysis::zones::HeartProfile::new(60.0, 184.0, None).unwrap();
         assert_eq!(
-            describe_workout(&Kind::FourByFour.workout(Some(&h))),
-            "4 × 4:00 (3:00 rest): rate 24–28, HR under 175"
+            describe_workout(&Kind::FourByFour.workout(Some(&h), None)),
+            "4 × 4:00 (3:00 rest): rate 20–26, HR under 175"
         );
-        assert_eq!(describe_workout(&Kind::RateSteps.workout(None)), "4 × 5:00 (2:00 rest): rate 20, 22, 24, 22");
+        assert_eq!(describe_workout(&Kind::RateSteps.workout(None, None)), "4 × 5:00 (2:00 rest): rate 20, 22, 24, 22");
     }
 
     /// Every workout has a command-line name, and it's the same workout.

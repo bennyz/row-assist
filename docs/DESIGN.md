@@ -300,15 +300,21 @@ time calls always get through.
 
 **Intervals (built, `analysis::workout`):** a workout is one piece, or work and rest intervals
 with targets for each work interval. The PM5 is set up for the intervals by hand (the row screen
-says how), and its workout state (PM CSAFE `0x8D`, recorded in every `Pm5Status`) moves the
-coach: "Go. 2 of 4." (with the interval's rate or power when it has them; "Last one." for the
-last) as work begins, "Rest. Paddle easy." as it ends, "Time. Paddle down." after the last.
-Following the PM5 rather than a clock keeps the calls on the monitor's intervals after a warm-up
-in the same row. Corrections come only in work, 30 s in, against that interval's targets, and
-the row doesn't end while the PM5 times a rest, sat out or not. 0 (waiting) and 1 (a single
-piece) are seen on hardware; the interval codes (3 rest, 4–5 work, 6–9 the changes between, 10–12
-ended) follow the spec and are still to be seen. `rowctl simulate --plan four-by-four` and
-`watch --sim --plan …` row them as a PM5 would.
+says how), and the coach follows it: "Go. 2 of 4." (with the interval's rate or power when it has
+them; "Last one." for the last) as work begins, "Rest. Paddle easy." as it ends, "Time. Paddle
+down." after the last or when the PM5's workout ends. Following the PM5 rather than a clock keeps
+the calls on the monitor's intervals after a warm-up in the same row. Corrections come only in
+work, 30 s in, against that interval's targets, and the row doesn't end while the PM5 runs an
+interval workout, rests sat out or not.
+
+What the PM5 says (seen on hardware, 2026-11-22, 4:00/3:00 intervals): its workout state (PM CSAFE
+`0x8D`) is 0 waiting, then **4 (interval work by time) through work and rest alike**, never 3
+(rest) as the spec has it; once a 6 (rest ending into work) for one poll; then 10, 12, 13 as it
+ends, logs and re-arms. What marks each interval is its clock: `work_time_cs` counts the interval
+down and starts again at the next one's length, and distance starts again at 0. So
+`IntervalClock` takes the first interval as work and each clock reset as the next stage, rest
+and work in turn, and the strokes' distance is carried across the resets. `rowctl simulate
+--plan four-by-four` and `watch --sim --plan …` row intervals the same way.
 
 ### 5.3 Mirror (visual feedback)
 
@@ -498,14 +504,17 @@ holds through re-planning (Watch data, midnight) until it's rowed; the recording
 what was rowed, so the planner counts it for what it was.
 
 **Power from last time (built, `workout::progression`):** an interval workout's work intervals
-are summed up from the PM5's workout state (`Summary::work`: power, rate, mean and peak heart
-rate each), and the next one of the same kind gets its power from them, a ±4% band per work
-interval. The 4×4: the last one's mean power, 3% more when it was held all the way (all four
-done, the last within 3% of the first, heart rate never over 95% of max); otherwise the same.
-Rate steps: each step's own power, 3% more when every step was rowed at its rate. The first of
-each goes by heart rate (the 4×4) or by rate alone (rate steps). The row screen says why
-("Last 4×4: 109 W average, held all four: 112 W this time."). Steady and easy rows need no
-such rule: capped by heart rate, their power rises as fitness does.
+are summed up from the PM5's interval clock (`Summary::work`: power, rate, mean and peak heart
+rate, the time the PM5 gave it), and the next one of the same kind is set from them, a ±4% power
+band per work interval. The 4×4 builds its work intervals from 2:00 to 4:00 before its power
+goes up: too hard last time (not all four done, the last more than 3% under the first, or rated
+9–10 of 10 on the review screen), a step shorter at its mean power; heart rate over 95% of max,
+the same again; otherwise held, a step longer, and at 4:00, 3% more power. The first real one
+(2026-11-22: 4:00 intervals, three of four done, 128 → 86 → 80 W, "too hard") made the next one
+4 × 3:00 at 98 W. Rate steps keep each step's own power, 3% more when every step was rowed at
+its rate and not rated too hard. The first of each goes by heart rate (the 4×4) or by rate alone
+(rate steps). The row screen says why. Steady and easy rows need no such rule: capped by heart
+rate, their power rises as fitness does.
 
 **The Plan page (built, `/plan`, `planner::outline`):** the block's phase, this week's rows,
 today's proposal and why, each interval workout's power from last time, and the next four weeks
@@ -540,7 +549,8 @@ Fitness after a long gap is unknown, so the ramp measures it:
 
 - 2 × steady: zone 2, 30–45 min, rate 18–20, technique focus.
 - 1 × rate/intensity work: e.g. 4 × 5 min stepping rate 20/22/24 at matched form, later 6 × 500 m,
-  in turn with the Norwegian 4×4 (4 × 4 min at 85–95% of max HR, rate 24–28, 3 min easy between).
+  in turn with the Norwegian 4×4 (4 hard intervals at 85–95% of max HR, rate 20–26, 3 min easy
+  between, building from 2 to 4 min each).
   Intensity only goes up once fault rates hold at that rate.
 - 1 × optional technique session: drills plus a rate ladder.
 - Volume +≤10%/week; lighter week every 4th week. Amber readiness → no intensity; red → minimum session.

@@ -190,7 +190,7 @@ struct Rec {
     /// The first stroke's catch.
     started_us: i64,
     /// The last moment the row was going: a stroke's end, or the PM5
-    /// timing an interval's rest (sat out, it doesn't end the row).
+    /// timing an interval workout (a rest sat out doesn't end the row).
     active_us: i64,
     next_still_us: i64,
 }
@@ -343,8 +343,9 @@ impl Runner {
         self.setup.progression = self.progressions.iter().find(|(k, _)| *k == plan.kind).map(|(_, p)| p.clone());
         plan.progress = self.setup.progression.as_ref().map(|p| p.note.clone());
         let heart = self.ctx.heart().map(|h| h.0);
-        plan.pm5_setup = plan.kind.pm5_setup();
-        plan.cues = describe_workout(&self.setup.workout(heart.as_ref()).0);
+        let (workout, _) = self.setup.workout(heart.as_ref());
+        plan.pm5_setup = workout.pm5_setup();
+        plan.cues = describe_workout(&workout);
         self.coach = Coach::new(&self.setup, Some(&self.ctx), self.speaker.clone());
         self.coach.screens = Some(self.hub.clone());
     }
@@ -376,8 +377,9 @@ impl Runner {
             EventKind::Pose(p) => self.coach.pose(p),
             EventKind::Pm5Status(s) => {
                 self.coach.pm5(s, t_us);
-                let resting = s.workout_state.and_then(analysis::workout::stage) == Some(analysis::workout::Stage::Rest);
-                if let Some(rec) = self.rec.as_mut().filter(|_| resting) {
+                // The PM5 timing an interval workout, rests included.
+                let intervals = s.workout_state.is_some_and(analysis::workout::in_intervals);
+                if let Some(rec) = self.rec.as_mut().filter(|_| intervals) {
                     rec.active_us = rec.active_us.max(t_us);
                 }
             }
@@ -712,6 +714,7 @@ mod tests {
                 ..Default::default()
             },
             hr_peak: Some(165.0),
+            length_s: 241.0,
         };
         let meta = store::sessions::SessionMeta {
             started_at_us: Clock::start().now_us() - 86_400_000_000,
@@ -728,7 +731,10 @@ mod tests {
         r.replan().await;
         r.pick(Kind::FourByFour);
         let plan = state.borrow().plan.clone().unwrap();
-        assert_eq!(plan.progress.as_deref(), Some("Last 4×4: 100 W average, held all four: 103 W this time."));
+        assert_eq!(
+            plan.progress.as_deref(),
+            Some("Last 4×4: 4 × 4:00 at 100 W average, held all four: 4 × 4:00 at 103 W this time.")
+        );
         assert!(plan.cues.contains("99–107 W"), "{}", plan.cues);
         r.pick(Kind::Steady);
         assert_eq!(state.borrow().plan.as_ref().unwrap().progress, None);
@@ -770,7 +776,7 @@ mod tests {
             .filter(|c| c.starts_with("Go") || c.starts_with("Rest") || c.starts_with("Time") || c.starts_with("Last"))
             .collect();
         // The PM5 was set for 2: it ends there, and so does the coach.
-        assert_eq!(cues, ["Go. 1 of 4. Rate 26.", "Rest. Paddle easy.", "Go. 2 of 4. Rate 26.", "Time. Paddle down."]);
+        assert_eq!(cues, ["Go. 1 of 4. Rate 23.", "Rest. Paddle easy.", "Go. 2 of 4. Rate 23.", "Time. Paddle down."]);
         let work = &saved[0].summary.work;
         assert_eq!(work.len(), 2, "the review knows each work interval");
         assert!(work.iter().all(|w| w.seg.watts.is_some_and(|x| (x - 83.0).abs() < 5.0)), "{work:?}");

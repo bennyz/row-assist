@@ -68,7 +68,12 @@ pub async fn run(args: PlanArgs) -> Result<()> {
         println!("  Focus: {} (\"{}\")", f.label(), f.cue());
     }
 
-    if let Some(setup) = p.kind.pm5_setup() {
+    let progression = ctx.progression(p.kind).await?;
+    if let Some(n) = &progression {
+        println!("  {}", n.note);
+    }
+    let heart = ctx.heart().map(|h| h.0);
+    if let Some(setup) = p.kind.workout(heart.as_ref(), progression.as_ref()).pm5_setup() {
         println!("\nSet on the PM5: {setup}.");
     }
     println!("\nRow it with: {}", p.command());

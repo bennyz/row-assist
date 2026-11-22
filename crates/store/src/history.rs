@@ -157,7 +157,7 @@ pub async fn progression(pool: &SqlitePool, kind: Kind, heart: Option<&HeartProf
         .iter()
         .rev()
         .find(|s| !s.meta.simulated && s.meta.plan.as_deref() == Some(kind.name()) && !s.summary.work.is_empty());
-    Ok(last.and_then(|s| next_power(kind, &s.summary.work, heart.map(four_by_four_hr_top))))
+    Ok(last.and_then(|s| next_power(kind, &s.summary.work, heart.map(four_by_four_hr_top), s.feel.effort)))
 }
 
 /// Faults rarer than this in recent sessions aren't worth a session's focus.

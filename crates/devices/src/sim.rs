@@ -41,22 +41,25 @@ pub struct SimIntervals {
 
 /// PM workout state codes (Concept2's PM CSAFE spec).
 const WORKOUT_ROW: u8 = 1;
-const INTERVAL_REST: u8 = 3;
+/// A real PM5 reports this through the rests too.
 const INTERVAL_WORK_TIME: u8 = 4;
 const WORKOUT_END: u8 = 10;
 
 impl SimIntervals {
-    /// The PM5's workout state at `t` seconds, and whether the rower is rowing.
-    fn at(&self, t: f64) -> (u8, bool) {
+    /// What the PM5 says at `t` seconds, as a real one does: its workout
+    /// state, the interval's clock (centiseconds left), and whether the rower
+    /// is rowing (sat still in the rests).
+    fn at(&self, t: f64) -> (u8, u32, bool) {
         let round = (self.work_s + self.rest_s) as f64;
         let k = (t / round) as u32;
         let within = t - k as f64 * round;
+        let cs = |left: f64| (left * 100.0) as u32;
         if k >= self.count || (k + 1 == self.count && within >= self.work_s as f64) {
-            (WORKOUT_END, false)
+            (WORKOUT_END, 0, false)
         } else if within < self.work_s as f64 {
-            (INTERVAL_WORK_TIME, true)
+            (INTERVAL_WORK_TIME, cs(self.work_s as f64 - within), true)
         } else {
-            (INTERVAL_REST, false)
+            (INTERVAL_WORK_TIME, cs(round - within), false)
         }
     }
 }
@@ -124,7 +127,8 @@ impl Sim {
     pub fn step(&mut self, n: u64) -> Vec<EventKind> {
         let cfg = &self.cfg;
         let t = n as f64 * POLL.as_secs_f64();
-        let (workout_state, rowing) = cfg.intervals.map_or((WORKOUT_ROW, true), |i| i.at(t));
+        let (workout_state, work_time_cs, rowing) =
+            cfg.intervals.map_or((WORKOUT_ROW, (t * 100.0) as u32, true), |i| i.at(t));
         if rowing {
             self.distance_m += self.speed * POLL.as_secs_f64();
         }
@@ -150,7 +154,7 @@ impl Sim {
             spm: Some(if rowing { cfg.spm.round() as u16 } else { 0 }),
             watts: Some(if rowing { (cfg.watts * self.peak_scale).round() as u16 } else { 0 }),
             distance_dm: Some((self.distance_m * 10.0) as u32),
-            work_time_cs: Some((t * 100.0) as u32),
+            work_time_cs: Some(work_time_cs),
             drag_factor: Some(cfg.drag_factor),
             workout_state: Some(workout_state),
         })];
@@ -340,16 +344,17 @@ mod tests {
                 .rev()
                 .filter(|e| e.t_us <= sec * 1_000_000)
                 .find_map(|e| match &e.kind {
-                    EventKind::Pm5Status(s) => Some((s.workout_state, s.watts)),
+                    EventKind::Pm5Status(s) => Some((s.workout_state, s.watts, s.work_time_cs)),
                     _ => None,
                 })
                 .unwrap()
         };
         assert_eq!(at(30).0, Some(4));
         assert!(at(30).1.unwrap() > 0);
-        assert_eq!(at(75), (Some(3), Some(0)), "sitting still in the rest");
+        assert_eq!(at(30).2, Some(3000), "the work interval's clock counts down");
+        assert_eq!(at(75), (Some(4), Some(0), Some(1500)), "sat still in the rest, still state 4, as a real PM5");
         assert_eq!(at(100).0, Some(4));
-        assert_eq!(at(160), (Some(10), Some(0)), "over after the last work interval");
+        assert_eq!(at(160).0, Some(10), "over after the last work interval");
     }
 
     #[test]
