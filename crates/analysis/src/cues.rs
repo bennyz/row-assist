@@ -1,5 +1,6 @@
 //! Pacing cues: short spoken corrections when rate, power or heart rate
-//! drift off target, plus halfway and time calls.
+//! drift off target, plus halfway and time calls; for intervals, a call as
+//! each work interval and rest begins.
 //!
 //! Judged on the median of the last few strokes so one odd stroke says
 //! nothing, with a settling-in period and cooldowns so it never nags. The
@@ -11,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::strokes::StrokeRecord;
 use crate::technique::Fault;
+use crate::workout::{Stage, Workout, stage};
 
 /// Acceptable ranges. Each is `(low, high)`, inclusive; a cue fires outside it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -19,8 +21,6 @@ pub struct Targets {
     pub watts: Option<(f64, f64)>,
     /// Heart-rate ceiling, bpm.
     pub hr_max: Option<f64>,
-    /// Piece length; enables the halfway and time calls.
-    pub minutes: Option<f64>,
 }
 
 impl Targets {
@@ -66,6 +66,10 @@ pub enum Cue {
     Easier { target: f64 },
     Halfway,
     Time,
+    /// A work interval begins: the `n`th of `of`, with its rate and power
+    /// when it has them.
+    Go { n: u32, of: u32, rate: Option<f64>, watts: Option<f64> },
+    Rest,
 }
 
 impl Cue {
@@ -79,6 +83,17 @@ impl Cue {
             Self::Easier { target } => format!("Ease off. {target:.0} watts."),
             Self::Halfway => "Halfway.".into(),
             Self::Time => "Time. Paddle down.".into(),
+            Self::Go { n, of, rate, watts } => {
+                let mut s = if n == of && of > 1 { "Last one.".to_string() } else { format!("Go. {n} of {of}.") };
+                if let Some(r) = rate {
+                    s += &format!(" Rate {r:.0}.");
+                }
+                if let Some(w) = watts {
+                    s += &format!(" {w:.0} watts.");
+                }
+                s
+            }
+            Self::Rest => "Rest. Paddle easy.".into(),
         }
     }
 
@@ -87,7 +102,7 @@ impl Cue {
             Self::HeartHigh { .. } => 0,
             Self::RateUp { .. } | Self::RateDown { .. } => 1,
             Self::Harder { .. } | Self::Easier { .. } => 2,
-            Self::Halfway | Self::Time => 3,
+            Self::Halfway | Self::Time | Self::Go { .. } | Self::Rest => 3,
         }
     }
 }
@@ -96,6 +111,8 @@ impl Cue {
 pub const WINDOW: usize = 6;
 /// No corrections in the first part of a piece, while rate and HR settle.
 pub const SETTLE_S: f64 = 60.0;
+/// Nor in the first part of a work interval, while rate and power come up.
+pub const WORK_SETTLE_S: f64 = 30.0;
 /// Quiet time after any correction.
 pub const COOLDOWN_S: f64 = 30.0;
 /// The same correction isn't repeated sooner than this.
@@ -111,37 +128,121 @@ struct Recent {
 
 #[derive(Debug)]
 pub struct Pacer {
-    targets: Targets,
+    workout: Workout,
     recent: VecDeque<Recent>,
     first_catch_us: Option<i64>,
     last_any_us: Option<i64>,
     last_kind_us: [Option<i64>; 4],
     halfway_said: bool,
+    /// The end was called: the piece's time, or the last work interval's.
     time_said: bool,
+    /// Intervals: where the PM5 is, and since when.
+    stage: Option<(Stage, i64)>,
+    /// Intervals: work intervals begun.
+    begun: u32,
+}
+
+/// Where an interval workout is, for the screens.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct IntervalNow {
+    pub stage: Stage,
+    /// The work interval this is, or the one before this rest.
+    pub n: u32,
+    pub of: u32,
+    /// Seconds left by the plan (the PM5 shows the exact time).
+    pub left_s: f64,
 }
 
 impl Pacer {
-    pub fn new(targets: Targets) -> Self {
+    pub fn new(workout: Workout) -> Self {
         Self {
-            targets,
+            workout,
             recent: VecDeque::with_capacity(WINDOW),
             first_catch_us: None,
             last_any_us: None,
             last_kind_us: [None; 4],
             halfway_said: false,
             time_said: false,
+            stage: None,
+            begun: 0,
         }
     }
 
-    pub fn targets(&self) -> &Targets {
-        &self.targets
+    pub fn workout(&self) -> &Workout {
+        &self.workout
+    }
+
+    /// What the row aims for right now: the piece's targets, or the
+    /// current work interval's (none in a rest).
+    pub fn targets(&self) -> Option<&Targets> {
+        match &self.workout {
+            Workout::Piece { targets, .. } => Some(targets),
+            Workout::Intervals { work, .. } => match self.stage {
+                Some((Stage::Work, _)) => work.get(self.begun as usize - 1),
+                _ => None,
+            },
+        }
+    }
+
+    pub fn interval(&self, now_us: i64) -> Option<IntervalNow> {
+        let Workout::Intervals { work_s, rest_s, work } = &self.workout else {
+            return None;
+        };
+        let (stage, since) = self.stage?;
+        let length = match stage {
+            Stage::Work => *work_s,
+            Stage::Rest => *rest_s,
+            Stage::Done => 0,
+        };
+        Some(IntervalNow {
+            stage,
+            n: self.begun,
+            of: work.len() as u32,
+            left_s: (length as f64 - (now_us - since) as f64 / 1e6).max(0.0),
+        })
+    }
+
+    /// The PM5's workout state, from every status poll. For intervals, a
+    /// call when work or rest begins, and the time call when the last work
+    /// interval ends. A piece ignores it.
+    pub fn pm5(&mut self, code: u8, t_us: i64) -> Option<Cue> {
+        let Workout::Intervals { work, .. } = &self.workout else {
+            return None;
+        };
+        let of = work.len() as u32;
+        let now = stage(code)?;
+        let first_work = self.stage.is_none() && now != Stage::Work;
+        if self.time_said || first_work || self.stage.is_some_and(|(s, _)| s == now) {
+            return None;
+        }
+        self.stage = Some((now, t_us));
+        // A median across work and rest would say nothing about either.
+        self.recent.clear();
+        let cue = match now {
+            Stage::Work => {
+                self.begun += 1;
+                let t = work.get(self.begun as usize - 1)?;
+                let mid = |b: Option<(f64, f64)>| b.map(|(lo, hi)| (lo + hi) / 2.0);
+                Cue::Go {
+                    n: self.begun,
+                    of,
+                    rate: mid(t.rate),
+                    watts: mid(t.watts),
+                }
+            }
+            Stage::Rest if self.begun < of => Cue::Rest,
+            Stage::Rest | Stage::Done => {
+                self.time_said = true;
+                Cue::Time
+            }
+        };
+        Some(self.said(cue, t_us))
     }
 
     /// Feed each completed stroke; returns at most one cue.
     pub fn stroke(&mut self, s: &StrokeRecord) -> Option<Cue> {
         let now = s.t_next_catch_us.unwrap_or(s.t_catch_us);
         let start = *self.first_catch_us.get_or_insert(s.t_catch_us);
-        let elapsed_s = (now - start) as f64 / 1e6;
         if self.recent.len() == WINDOW {
             self.recent.pop_front();
         }
@@ -151,19 +252,28 @@ impl Pacer {
             hr: s.hr_bpm,
         });
 
-        // Time calls always get through.
-        if let Some(min) = self.targets.minutes {
-            if !self.time_said && elapsed_s >= min * 60.0 {
-                self.time_said = true;
-                self.halfway_said = true;
-                return Some(self.said(Cue::Time, now));
+        let settled = match &self.workout {
+            Workout::Piece { minutes, .. } => {
+                let elapsed_s = (now - start) as f64 / 1e6;
+                // Time calls always get through.
+                if let Some(min) = *minutes {
+                    if !self.time_said && elapsed_s >= min * 60.0 {
+                        self.time_said = true;
+                        self.halfway_said = true;
+                        return Some(self.said(Cue::Time, now));
+                    }
+                    if !self.halfway_said && elapsed_s >= min * 30.0 {
+                        self.halfway_said = true;
+                        return Some(self.said(Cue::Halfway, now));
+                    }
+                }
+                elapsed_s >= SETTLE_S
             }
-            if !self.halfway_said && elapsed_s >= min * 30.0 {
-                self.halfway_said = true;
-                return Some(self.said(Cue::Halfway, now));
+            Workout::Intervals { .. } => {
+                matches!(self.stage, Some((Stage::Work, since)) if (now - since) as f64 / 1e6 >= WORK_SETTLE_S)
             }
-        }
-        if self.time_said || elapsed_s < SETTLE_S || self.recent.len() < WINDOW {
+        };
+        if self.time_said || !settled || self.recent.len() < WINDOW {
             return None;
         }
         if self.last_any_us.is_some_and(|t| (now - t) as f64 / 1e6 < COOLDOWN_S) {
@@ -185,7 +295,7 @@ impl Pacer {
             xs.sort_by(f64::total_cmp);
             Some(xs[xs.len() / 2])
         };
-        let t = &self.targets;
+        let t = self.targets()?;
         if let (Some(max), Some(hr)) = (t.hr_max, median(|r| r.hr))
             && hr > max
         {
@@ -327,21 +437,27 @@ mod tests {
         assert_eq!(Targets::default().rhythm(), None);
     }
 
-    fn run(targets: Targets, strokes: &[StrokeRecord]) -> Vec<(f64, Cue)> {
-        let mut p = Pacer::new(targets);
+    fn piece(minutes: Option<f64>, targets: Targets) -> Workout {
+        Workout::Piece { minutes, targets }
+    }
+
+    fn run(workout: Workout, strokes: &[StrokeRecord]) -> Vec<(f64, Cue)> {
+        let mut p = Pacer::new(workout);
         strokes
             .iter()
             .filter_map(|s| p.stroke(s).map(|c| ((s.t_catch_us - T0) as f64 / 1e6, c)))
             .collect()
     }
 
-    fn reference() -> Targets {
-        Targets {
-            rate: Some((19.0, 21.0)),
-            watts: Some((48.0, 58.0)),
-            hr_max: None,
-            minutes: Some(20.0),
-        }
+    fn reference() -> Workout {
+        piece(
+            Some(20.0),
+            Targets {
+                rate: Some((19.0, 21.0)),
+                watts: Some((48.0, 58.0)),
+                hr_max: None,
+            },
+        )
     }
 
     #[test]
@@ -375,11 +491,11 @@ mod tests {
         };
         // Power is low too, but "harder" with heart rate over the ceiling
         // would be the wrong advice: only the heart cue is heard.
-        let cues = run(t.clone(), &steady(60, 3.0, 40.0, |_| 160.0));
+        let cues = run(piece(None, t.clone()), &steady(60, 3.0, 40.0, |_| 160.0));
         assert!(matches!(cues[0].1, Cue::HeartHigh { bpm } if bpm == 160.0));
         assert!(cues.iter().all(|(_, c)| matches!(c, Cue::HeartHigh { .. })));
         // With heart rate fine, power gets its turn.
-        let cues = run(t, &steady(60, 3.0, 40.0, |_| 140.0));
+        let cues = run(piece(None, t), &steady(60, 3.0, 40.0, |_| 140.0));
         assert!(matches!(cues[0].1, Cue::Harder { target } if target == 53.0));
     }
 
@@ -391,7 +507,7 @@ mod tests {
             watts: Some((48.0, 58.0)),
             ..Default::default()
         };
-        assert!(run(t, &s).is_empty());
+        assert!(run(piece(None, t), &s).is_empty());
     }
 
     #[test]
@@ -399,6 +515,101 @@ mod tests {
         assert_eq!(Cue::RateUp { target: 20.0 }.text(), "Rate up. 20.");
         assert_eq!(Cue::HeartHigh { bpm: 162.4 }.text(), "Heart rate 162. Ease off.");
         assert!(Targets::default().is_empty());
+        let go = |n, rate, watts| Cue::Go { n, of: 4, rate, watts }.text();
+        assert_eq!(go(1, None, None), "Go. 1 of 4.");
+        assert_eq!(go(2, Some(22.0), Some(110.0)), "Go. 2 of 4. Rate 22. 110 watts.");
+        assert_eq!(go(4, None, None), "Last one.");
+    }
+
+    mod intervals {
+        use super::super::*;
+        use crate::session::tests::{T0, steady};
+        use crate::workout::Kind;
+
+        const S: i64 = 1_000_000;
+
+        /// A 4×4 (2 work intervals of 4 min, 3 min rest) as the PM5 times
+        /// it, rowed at `spm` and `watts` throughout: each poll's state and
+        /// each stroke, in time order, through the pacer.
+        fn row(work: Vec<Targets>, spm: f64, watts: f64, hr: f64) -> (Pacer, Vec<(f64, Cue)>) {
+            let mut p = Pacer::new(Workout::Intervals { work_s: 240, rest_s: 180, work });
+            let n = (60.0 * 17.0 / (60.0 / spm)) as u32;
+            let strokes = steady(n, 60.0 / spm, watts, |_| hr);
+            // Work 0–240 s, rest to 420, work to 660, rest after; a poll a second.
+            let code = |t: i64| match (t - T0) / S {
+                0..240 => 4,
+                240..420 => 3,
+                420..660 => 4,
+                _ => 3,
+            };
+            let mut cues = Vec::new();
+            let mut next = strokes.iter().peekable();
+            for sec in 0..17 * 60 {
+                let t = T0 + sec * S;
+                if let Some(c) = p.pm5(code(t), t) {
+                    cues.push((sec as f64, c));
+                }
+                while let Some(s) = next.next_if(|s| s.t_next_catch_us.unwrap_or(s.t_catch_us) <= t) {
+                    // Judged as the stroke ends.
+                    if let Some(c) = p.stroke(s) {
+                        cues.push(((s.t_next_catch_us.unwrap() - T0) as f64 / 1e6, c));
+                    }
+                }
+            }
+            (p, cues)
+        }
+
+        fn hard(n: usize) -> Vec<Targets> {
+            vec![
+                Targets {
+                    rate: Some((24.0, 28.0)),
+                    watts: None,
+                    hr_max: Some(175.0),
+                };
+                n
+            ]
+        }
+
+        #[test]
+        fn calls_each_interval_from_the_pm5_and_ends_after_the_last() {
+            let (p, cues) = row(hard(2), 26.0, 110.0, 160.0);
+            let calls: Vec<(f64, Cue)> = cues.into_iter().filter(|(_, c)| c.kind() == 3).collect();
+            let go = |n| Cue::Go { n, of: 2, rate: Some(26.0), watts: None };
+            assert_eq!(calls, vec![(0.0, go(1)), (240.0, Cue::Rest), (420.0, go(2)), (660.0, Cue::Time)]);
+            assert!(p.targets().is_none(), "nothing to aim for once it's over");
+        }
+
+        #[test]
+        fn corrects_in_work_only_after_settling_and_never_in_a_rest() {
+            // Rate 31 throughout: too quick in work, and nobody cares in a rest.
+            let (_, cues) = row(hard(2), 31.0, 110.0, 160.0);
+            let fixes: Vec<f64> = cues.iter().filter(|(_, c)| matches!(c, Cue::RateDown { .. })).map(|(t, _)| *t).collect();
+            assert!(!fixes.is_empty());
+            for t in &fixes {
+                let in_work = (WORK_SETTLE_S..240.0).contains(t) || (420.0 + WORK_SETTLE_S..660.0).contains(t);
+                assert!(in_work, "a correction at {t} s");
+            }
+        }
+
+        #[test]
+        fn the_heart_ceiling_eases_a_bout_off() {
+            let (_, cues) = row(hard(2), 26.0, 110.0, 180.0);
+            assert!(cues.iter().any(|(_, c)| matches!(c, Cue::HeartHigh { bpm } if *bpm == 180.0)));
+        }
+
+        #[test]
+        fn a_rest_before_any_work_and_a_piece_ignore_the_pm5() {
+            let mut p = Pacer::new(Kind::FourByFour.workout(None));
+            assert_eq!(p.pm5(3, T0), None, "a rest before the first work interval");
+            assert_eq!(p.pm5(1, T0), None, "a single piece on the PM5");
+            assert!(matches!(p.pm5(4, T0 + S), Some(Cue::Go { n: 1, of: 4, .. })));
+            assert_eq!(p.pm5(4, T0 + 2 * S), None, "the same stage again");
+            let now = p.interval(T0 + 61 * S).unwrap();
+            assert_eq!((now.stage, now.n, now.of, now.left_s), (Stage::Work, 1, 4, 180.0));
+            let mut piece = Pacer::new(Kind::Steady.workout(None));
+            assert_eq!(piece.pm5(4, T0), None);
+            assert!(piece.interval(T0).is_none());
+        }
     }
 
     mod focus {

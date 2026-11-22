@@ -3,14 +3,14 @@
 
 use std::path::PathBuf;
 
-use analysis::planner::{Kind, Phase, Proposal, propose};
+use analysis::planner::{Phase, Proposal, propose};
 use analysis::readiness::{HRV_BASELINE_DAYS, Readiness, WEEK, readiness};
+use analysis::workout::Kind;
 use anyhow::Result;
 use clap::Args;
 
 use crate::ctx::{Ctx, today};
 use crate::live::Setup;
-use crate::plan::Plan;
 
 #[derive(Args, Debug)]
 pub struct PlanArgs {
@@ -30,20 +30,12 @@ pub async fn today_plan(ctx: &Ctx, camera: bool, day: i64) -> Result<(Proposal, 
     Ok((propose(&rows, day, ready.level, focus), ready))
 }
 
-/// The row a proposal sets up: the same preset, length and focus as its
+/// The row a proposal sets up: the same workout, length and focus as its
 /// `rowctl record` command.
 pub fn setup_for(p: &Proposal) -> Setup {
-    let plan = match p.kind {
-        Kind::Reference => Plan::Reference,
-        Kind::Easy | Kind::Minimum => Plan::Easy,
-        Kind::Steady => Plan::Steady,
-        Kind::Rate20Test => Plan::Rate20,
-        Kind::RateSteps => Plan::RateSteps,
-    };
-    let fixed = matches!(p.kind, Kind::Reference | Kind::Rate20Test | Kind::RateSteps);
     Setup {
-        plan: Some(plan),
-        minutes: (!fixed).then_some(p.minutes.1 as f64),
+        kind: Some(p.kind),
+        minutes: (!p.kind.is_fixed()).then_some(p.minutes.1 as f64),
         focus: p.focus,
         ..Default::default()
     }
@@ -76,7 +68,7 @@ pub async fn run(args: PlanArgs) -> Result<()> {
         println!("  Focus: {} (\"{}\")", f.label(), f.cue());
     }
 
-    if let Some(setup) = p.pm5_setup() {
+    if let Some(setup) = p.kind.pm5_setup() {
         println!("\nSet on the PM5: {setup}.");
     }
     println!("\nRow it with: {}", p.command());
@@ -98,10 +90,10 @@ mod tests {
     /// `serve` rows what `plan` tells you to type.
     #[test]
     fn served_rows_match_the_plan_command() {
-        use analysis::planner::{Kind, Phase, Proposal};
+        use analysis::planner::{Phase, Proposal};
+        use analysis::workout::Kind;
         use clap::ValueEnum;
-        let kinds = [Kind::Reference, Kind::Easy, Kind::Steady, Kind::RateSteps, Kind::Rate20Test, Kind::Minimum];
-        for kind in kinds {
+        for kind in Kind::ALL {
             let p = Proposal {
                 kind,
                 minutes: (20, 25),
@@ -112,9 +104,10 @@ mod tests {
                 why: vec![],
             };
             let s = super::setup_for(&p);
-            let preset = s.plan.unwrap().to_possible_value().unwrap();
             let cmd = p.command();
-            assert!(cmd.contains(&format!("--plan {} ", preset.get_name())), "{kind:?}: {cmd}");
+            let preset = cmd.split("--plan ").nth(1).and_then(|r| r.split(' ').next()).unwrap();
+            let plan = crate::plan::Plan::from_str(preset, false).unwrap();
+            assert_eq!(plan.kind().name(), s.kind.unwrap().name(), "{kind:?}: {cmd}");
             assert_eq!(s.minutes.is_some(), cmd.contains("--minutes 25"), "{kind:?}: {cmd}");
             assert_eq!(s.focus, Some(Fault::EarlyArms));
         }

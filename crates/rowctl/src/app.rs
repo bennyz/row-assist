@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use analysis::strokes::StrokeAssembler;
+use analysis::workout::Kind;
 use anyhow::{Context, Result};
 use clap::Args;
 use devices::sim;
@@ -28,7 +29,7 @@ use tokio::sync::{Notify, mpsc, watch};
 
 use crate::ctx::{Ctx, today};
 use crate::live::{Coach, Devices, HeartPick, Setup, View, spawn_devices, start_speaker};
-use crate::plan::describe_targets;
+use crate::plan::describe_workout;
 use crate::planning::{setup_for, today_plan};
 use crate::render::record_line;
 use crate::review;
@@ -131,6 +132,7 @@ pub async fn run(args: ServeArgs) -> Result<()> {
             Some(c) = command_rx.recv() => match c {
                 Command::Stop => runner.end().await,
                 Command::Mark(m) => runner.mark(m),
+                Command::Pick(k) => runner.pick(k),
             },
             _ = &mut quit => break,
         }
@@ -186,7 +188,9 @@ struct Rec {
     path: PathBuf,
     /// The first stroke's catch.
     started_us: i64,
-    last_stroke_us: i64,
+    /// The last moment the row was going: a stroke's end, or the PM5
+    /// timing an interval's rest (sat out, it doesn't end the row).
+    active_us: i64,
     next_still_us: i64,
 }
 
@@ -202,6 +206,8 @@ struct Runner {
     state: RowState,
     /// What the next (or current) row is set up as, and the day it was planned.
     setup: Setup,
+    /// A workout picked on the row screen instead of the plan's.
+    picked: Option<Kind>,
     plan_day: i64,
     coach: Coach,
     asm: StrokeAssembler,
@@ -245,6 +251,7 @@ impl Runner {
                 ..Default::default()
             },
             setup: Setup::default(),
+            picked: None,
             plan_day: 0,
             coach,
             asm: StrokeAssembler::new(),
@@ -276,15 +283,53 @@ impl Runner {
             }
         };
         println!("Next row: {}", proposal.kind.describe());
-        self.setup = setup_for(&proposal);
-        let heart = self.ctx.heart().map(|h| h.0);
+        self.plan_day = day;
+        let kind = self.picked.unwrap_or(proposal.kind);
         self.state.plan = Some(row::Plan {
-            pm5_setup: proposal.pm5_setup(),
-            cues: describe_targets(&self.setup.targets(heart.as_ref()).0),
+            kind,
+            about: kind.describe(),
+            pm5_setup: None,
+            cues: String::new(),
             proposal,
             readiness,
         });
-        self.plan_day = day;
+        self.set_up();
+    }
+
+    /// From the row screen: row this instead of the plan (the plan's own
+    /// kind goes back to it). Kept through re-planning until it's rowed.
+    fn pick(&mut self, kind: Kind) {
+        if self.rec.is_some() {
+            return;
+        }
+        println!("Picked: {}", kind.describe());
+        self.picked = Some(kind);
+        if let Some(plan) = self.state.plan.as_mut() {
+            plan.kind = kind;
+            plan.about = kind.describe();
+        }
+        self.set_up();
+        self.publish();
+    }
+
+    /// Set the next row up as the plan says, or as picked: its workout,
+    /// length and focus, and a coach for it.
+    fn set_up(&mut self) {
+        let Some(plan) = self.state.plan.as_mut() else { return };
+        let p = &plan.proposal;
+        self.setup = if plan.kind == p.kind {
+            setup_for(p)
+        } else {
+            Setup {
+                kind: Some(plan.kind),
+                minutes: (!plan.kind.is_fixed()).then_some(plan.kind.minutes().0 as f64),
+                focus: p.focus,
+                ..Default::default()
+            }
+        };
+        let heart = self.ctx.heart().map(|h| h.0);
+        plan.pm5_setup = plan.kind.pm5_setup();
+        plan.cues = describe_workout(&self.setup.workout(heart.as_ref()).0);
         self.coach = Coach::new(&self.setup, Some(&self.ctx), self.speaker.clone());
         self.coach.screens = Some(self.hub.clone());
     }
@@ -314,9 +359,20 @@ impl Runner {
                 self.heart_at = Some((ev.t_us, h.via_pm5));
             }
             EventKind::Pose(p) => self.coach.pose(p),
+            EventKind::Pm5Status(s) => {
+                self.coach.pm5(s, t_us);
+                let resting = s.workout_state.and_then(analysis::workout::stage) == Some(analysis::workout::Stage::Rest);
+                if let Some(rec) = self.rec.as_mut().filter(|_| resting) {
+                    rec.active_us = rec.active_us.max(t_us);
+                }
+            }
             _ => {}
         }
         let stroke = self.asm.push(&ev);
+        // A call the PM5 just set off (work or rest beginning).
+        for cue in self.coach.take_said(t_us) {
+            self.write(&cue);
+        }
         match &mut self.rec {
             Some(rec) => {
                 if let Err(e) = rec.writer.write(&ev) {
@@ -337,7 +393,7 @@ impl Runner {
         }
         self.state.strokes += 1;
         let Some(rec) = self.rec.as_mut() else { return };
-        rec.last_stroke_us = r.t_next_catch_us.unwrap_or(r.t_catch_us);
+        rec.active_us = rec.active_us.max(r.t_next_catch_us.unwrap_or(r.t_catch_us));
         let started = rec.started_us;
         self.coach.observe(&mut r);
         println!("{}", record_line(&r, started, self.coach.heart.as_ref()));
@@ -348,12 +404,16 @@ impl Runner {
         }
     }
 
-    /// Into the recording, when there is one.
+    /// Into the recording, or before the first stroke its pre-roll: the
+    /// first interval's call comes during the first stroke.
     fn write(&mut self, ev: &Event) {
-        if let Some(rec) = self.rec.as_mut()
-            && let Err(e) = rec.writer.write(ev)
-        {
-            eprintln!("Recording to {} failed: {e:#}", rec.path.display());
+        match self.rec.as_mut() {
+            Some(rec) => {
+                if let Err(e) = rec.writer.write(ev) {
+                    eprintln!("Recording to {} failed: {e:#}", rec.path.display());
+                }
+            }
+            None => self.pre.push_back(ev.clone()),
         }
     }
 
@@ -378,7 +438,7 @@ impl Runner {
             .unwrap_or_else(|| start_us.to_string());
         let path = self.sessions.join(format!("{name}.rowrec"));
         let mut header = Header::new(start_us, concat!("rowctl ", env!("CARGO_PKG_VERSION")));
-        header.plan = self.setup.plan.map(|p| p.name().to_owned());
+        header.plan = self.setup.kind.map(|k| k.name().to_owned());
         header.focus = self.setup.focus.map(|f| f.label().to_owned());
         header.simulated = self.sim;
         let mut writer = match FileWriter::create(&path, &header) {
@@ -405,7 +465,7 @@ impl Runner {
             writer,
             path,
             started_us: first_catch_us,
-            last_stroke_us: first_catch_us,
+            active_us: first_catch_us,
             next_still_us: first_catch_us + FIRST_STILL_US,
         });
         self.state.phase = Phase::Rowing;
@@ -415,7 +475,7 @@ impl Runner {
 
     async fn tick(&mut self, now_us: i64) {
         match &self.rec {
-            Some(rec) if now_us - rec.last_stroke_us >= self.end_after_us => {
+            Some(rec) if now_us - rec.active_us >= self.end_after_us => {
                 println!("No strokes for {:.0} s: ending the row", self.state.ends_after_s);
                 self.end().await;
             }
@@ -423,7 +483,7 @@ impl Runner {
             _ => {}
         }
         self.ask_for_still(now_us);
-        self.coach.publish_focus();
+        self.coach.publish_focus(now_us);
         self.publish_at(now_us);
     }
 
@@ -491,6 +551,7 @@ impl Runner {
         self.state.mark = None;
         self.asm = StrokeAssembler::new();
         self.pre.clear();
+        self.picked = None;
         self.state.phase = Phase::Ready;
         // The row just saved counts in the next plan.
         self.replan().await;
@@ -505,7 +566,7 @@ impl Runner {
     fn publish_at(&mut self, now_us: i64) {
         let secs = |us: i64| Some((us as f64 / 1e6).max(0.0));
         (self.state.elapsed_s, self.state.idle_s) = match &self.rec {
-            Some(rec) => (secs(now_us - rec.started_us), secs(now_us - rec.last_stroke_us)),
+            Some(rec) => (secs(now_us - rec.started_us), secs(now_us - rec.active_us)),
             None => (None, None),
         };
         // The Heart chip: the strap's own link, or the PM5 passing it on.
@@ -553,8 +614,8 @@ mod tests {
         let (mut r, state, dir) = runner("row").await;
         assert_eq!(state.borrow().phase, Phase::Ready);
         let plan = state.borrow().plan.clone().expect("a plan before the first row");
-        assert_eq!(plan.proposal.kind, analysis::planner::Kind::Reference, "no rows yet: start with the reference");
-        assert_eq!(r.setup.plan, Some(crate::plan::Plan::Reference));
+        assert_eq!(plan.proposal.kind, Kind::Reference, "no rows yet: start with the reference");
+        assert_eq!(r.setup.kind, Some(Kind::Reference));
 
         let t0 = Clock::start().now_us();
         let events = rowing(t0, 90);
@@ -598,6 +659,70 @@ mod tests {
         let last = state.borrow().last.clone().unwrap();
         assert!(last.strokes < MIN_STROKES && last.session.is_none(), "{last:?}");
         assert_eq!(files(&dir), 1, "the bump's file is gone");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_picked_workout_holds_through_replanning_until_it_is_rowed() {
+        let (mut r, state, dir) = runner("pick").await;
+        r.pick(Kind::FourByFour);
+        let plan = state.borrow().plan.clone().unwrap();
+        assert_eq!((plan.kind, plan.proposal.kind), (Kind::FourByFour, Kind::Reference));
+        assert!(plan.pm5_setup.unwrap().contains("4:00 work / 3:00 rest"));
+        r.watch_data().await;
+        assert_eq!(state.borrow().plan.as_ref().unwrap().kind, Kind::FourByFour, "Watch data re-plans; the pick stays");
+        r.pick(Kind::Reference);
+        assert_eq!(r.setup, crate::planning::setup_for(&plan.proposal), "back to the plan");
+        r.pick(Kind::Steady);
+        assert_eq!(r.setup.minutes, Some(30.0));
+        for ev in rowing(Clock::start().now_us(), 60) {
+            r.event(ev);
+        }
+        r.pick(Kind::Easy);
+        assert_eq!(r.setup.kind, Some(Kind::Steady), "not mid-row");
+        r.end().await;
+        let saved = store::sessions::list_sessions(&r.ctx.pool).await.unwrap();
+        assert_eq!(saved[0].meta.plan.as_deref(), Some("steady"), "the recording says what was rowed");
+        assert_eq!(state.borrow().plan.as_ref().unwrap().kind, Kind::Reference, "after it, the plan again");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_interval_workout_is_called_from_the_pm5_and_a_rest_sat_out_doesnt_end_it() {
+        let (mut r, state, dir) = runner("intervals").await;
+        r.pick(Kind::FourByFour);
+        // 2 × (60 s work, 150 s rest sat still): the rest outlasts --end-after.
+        let cfg = sim::SimConfig {
+            intervals: Some(sim::SimIntervals { count: 2, work_s: 60, rest_s: 150 }),
+            ..Default::default()
+        };
+        let t0 = Clock::start().now_us();
+        let events = sim::generate(cfg, t0, Duration::from_secs(300));
+        let mut next_tick = t0;
+        for ev in events {
+            while ev.t_us >= next_tick {
+                r.tick(next_tick).await;
+                next_tick += 1_000_000;
+            }
+            r.event(ev);
+        }
+        assert_eq!(state.borrow().phase, Phase::Rowing, "still going after a 150 s rest");
+        r.tick(next_tick + 2 * MIN + 1).await;
+        let s = state.borrow().clone();
+        let saved = store::sessions::list_sessions(&r.ctx.pool).await.unwrap();
+        assert_eq!(saved.len(), 1, "one row, not two: {:?}", s.last);
+        assert_eq!(saved[0].meta.plan.as_deref(), Some("four_by_four"));
+        let (_, recorded, _) = recording::read_all(std::path::Path::new(&saved[0].meta.recording)).unwrap();
+        let cues: Vec<_> = recorded
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EventKind::Cue { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .filter(|c| c.starts_with("Go") || c.starts_with("Rest") || c.starts_with("Time") || c.starts_with("Last"))
+            .collect();
+        // The PM5 was set for 2: it ends there, and so does the coach.
+        assert_eq!(cues, ["Go. 1 of 4. Rate 26.", "Rest. Paddle easy.", "Go. 2 of 4. Rate 26.", "Time. Paddle down."]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

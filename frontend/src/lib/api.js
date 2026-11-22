@@ -24,6 +24,14 @@ export const markRow = (fault) =>
     body: JSON.stringify({ fault }),
   });
 
+/** Row this next instead of the plan: a workout kind (the plan's own goes back to it). */
+export const pickWorkout = (kind) =>
+  fetch('/api/row/workout', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ kind }),
+  });
+
 /** How a row felt: effort 1–10 (or null) and a comment. */
 export const setFeel = (id, effort, comment) =>
   fetch(`/api/sessions/${id}/feel`, {

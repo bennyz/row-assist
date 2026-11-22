@@ -7,6 +7,7 @@
 use analysis::planner::Proposal;
 use analysis::readiness::Readiness;
 use analysis::technique::Fault;
+use analysis::workout::Kind;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -41,12 +42,16 @@ pub struct Devices {
     pub camera: DeviceLink,
 }
 
-/// What the next row is set up as.
+/// What the next row is set up as: the plan's proposal, or a workout
+/// picked on the row screen instead.
 #[derive(Debug, Clone, Serialize)]
 pub struct Plan {
+    pub kind: Kind,
+    /// What `kind` is, in a line.
+    pub about: &'static str,
     pub proposal: Proposal,
     pub readiness: Readiness,
-    pub pm5_setup: Option<&'static str>,
+    pub pm5_setup: Option<String>,
     /// What the coach will call, e.g. "rate 19–21, 48–58 W, 20 min".
     pub cues: String,
 }
@@ -99,6 +104,8 @@ pub enum Command {
     /// End the row now (saved if it's long enough).
     Stop,
     Mark(Mark),
+    /// Row this next instead of the plan (the plan's own kind goes back to it).
+    Pick(Kind),
 }
 
 /// The server's end of the runner: its state, and a way to send it commands.
@@ -125,6 +132,20 @@ async fn command(api: &Api, c: Command) -> StatusCode {
 
 pub async fn stop(State(api): State<Api>) -> StatusCode {
     command(&api, Command::Stop).await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Pick {
+    pub kind: Kind,
+}
+
+/// `POST /api/row/workout` with `{"kind": "four_by_four"}`: between rows
+/// only (409 while one is under way).
+pub async fn pick(State(api): State<Api>, Json(p): Json<Pick>) -> StatusCode {
+    if api.row.as_ref().is_some_and(|r| r.state.borrow().phase != Phase::Ready) {
+        return StatusCode::CONFLICT;
+    }
+    command(&api, Command::Pick(p.kind)).await
 }
 
 /// `POST /api/row/mark` with `{"fault": "early_arms"}`, or `{"fault": null}`

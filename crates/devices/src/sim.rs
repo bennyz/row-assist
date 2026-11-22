@@ -27,6 +27,38 @@ pub struct SimConfig {
     pub seed: u64,
     /// Also simulate the camera page's pose frames.
     pub pose: Option<PoseSim>,
+    /// Row intervals as a PM5 set up for them times them: work, then a rest
+    /// sat still, with the PM5's workout state codes; then the workout ends.
+    pub intervals: Option<SimIntervals>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimIntervals {
+    pub count: u32,
+    pub work_s: u32,
+    pub rest_s: u32,
+}
+
+/// PM workout state codes (Concept2's PM CSAFE spec).
+const WORKOUT_ROW: u8 = 1;
+const INTERVAL_REST: u8 = 3;
+const INTERVAL_WORK_TIME: u8 = 4;
+const WORKOUT_END: u8 = 10;
+
+impl SimIntervals {
+    /// The PM5's workout state at `t` seconds, and whether the rower is rowing.
+    fn at(&self, t: f64) -> (u8, bool) {
+        let round = (self.work_s + self.rest_s) as f64;
+        let k = (t / round) as u32;
+        let within = t - k as f64 * round;
+        if k >= self.count || (k + 1 == self.count && within >= self.work_s as f64) {
+            (WORKOUT_END, false)
+        } else if within < self.work_s as f64 {
+            (INTERVAL_WORK_TIME, true)
+        } else {
+            (INTERVAL_REST, false)
+        }
+    }
 }
 
 impl Default for SimConfig {
@@ -42,6 +74,7 @@ impl Default for SimConfig {
             hr_ramp_s: 300.0,
             seed: 0x5EED,
             pose: None,
+            intervals: None,
         }
     }
 }
@@ -91,7 +124,10 @@ impl Sim {
     pub fn step(&mut self, n: u64) -> Vec<EventKind> {
         let cfg = &self.cfg;
         let t = n as f64 * POLL.as_secs_f64();
-        self.distance_m += self.speed * POLL.as_secs_f64();
+        let (workout_state, rowing) = cfg.intervals.map_or((WORKOUT_ROW, true), |i| i.at(t));
+        if rowing {
+            self.distance_m += self.speed * POLL.as_secs_f64();
+        }
 
         let cycle = (t / self.cycle_s) as u64;
         if cycle != self.last_cycle {
@@ -99,7 +135,9 @@ impl Sim {
             self.peak_scale = 1.0 + 0.08 * self.rng.signed();
         }
         let in_cycle = t - cycle as f64 * self.cycle_s;
-        let state = if in_cycle < self.drive_s {
+        let state = if !rowing {
+            StrokeState::WaitingForMinSpeed
+        } else if in_cycle < self.drive_s {
             StrokeState::Drive
         } else if in_cycle < self.drive_s + 0.05 {
             StrokeState::Dwell
@@ -109,12 +147,12 @@ impl Sim {
 
         let mut out = vec![EventKind::Pm5Status(Pm5Status {
             stroke_state: Some(state),
-            spm: Some(cfg.spm.round() as u16),
-            watts: Some((cfg.watts * self.peak_scale).round() as u16),
+            spm: Some(if rowing { cfg.spm.round() as u16 } else { 0 }),
+            watts: Some(if rowing { (cfg.watts * self.peak_scale).round() as u16 } else { 0 }),
             distance_dm: Some((self.distance_m * 10.0) as u32),
             work_time_cs: Some((t * 100.0) as u32),
             drag_factor: Some(cfg.drag_factor),
-            workout_state: Some(1),
+            workout_state: Some(workout_state),
         })];
 
         if state == StrokeState::Drive {
@@ -142,7 +180,9 @@ impl Sim {
                 ..Default::default()
             }));
         }
-        if let Some(ps) = self.cfg.pose.clone() {
+        if let Some(ps) = self.cfg.pose.clone()
+            && rowing
+        {
             self.poses(&ps, t, &mut out);
         }
         out
@@ -285,6 +325,31 @@ mod tests {
         let hearts = evs.iter().filter(|e| matches!(e.kind, EventKind::Heart(_))).count();
         assert_eq!(hearts, 30);
         assert_eq!(evs.last().unwrap().t_us, 1_000 + 29_950_000);
+    }
+
+    #[test]
+    fn intervals_row_the_work_and_sit_out_the_rests() {
+        let cfg = SimConfig {
+            intervals: Some(SimIntervals { count: 2, work_s: 60, rest_s: 30 }),
+            ..Default::default()
+        };
+        let events = generate(cfg, 0, Duration::from_secs(200));
+        let at = |sec: i64| {
+            events
+                .iter()
+                .rev()
+                .filter(|e| e.t_us <= sec * 1_000_000)
+                .find_map(|e| match &e.kind {
+                    EventKind::Pm5Status(s) => Some((s.workout_state, s.watts)),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(at(30).0, Some(4));
+        assert!(at(30).1.unwrap() > 0);
+        assert_eq!(at(75), (Some(3), Some(0)), "sitting still in the rest");
+        assert_eq!(at(100).0, Some(4));
+        assert_eq!(at(160), (Some(10), Some(0)), "over after the last work interval");
     }
 
     #[test]

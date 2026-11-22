@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::readiness::Level;
 use crate::reference::Ramp;
 use crate::technique::Fault;
+use crate::workout::Kind;
 
 /// A row done, from the logbook or the app. `day` counts days since 1970-01-01.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -16,36 +17,6 @@ pub struct Row {
     pub plan: Option<String>,
     /// For a reference row: what it said about the comeback ramp.
     pub ramp: Option<Ramp>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Kind {
-    /// 20 min at rate 20, ~53 W: measures what fitness is left after a gap.
-    Reference,
-    /// 20–25 min easy, rate 18–20, zone 2 or below.
-    Easy,
-    /// 30–45 min zone 2, rate 18–20.
-    Steady,
-    /// Rate steps at matched form, e.g. 4 × 5 min at 20 / 22 / 24 / 22.
-    RateSteps,
-    /// 20 min held at rate 20, best steady power: the benchmark.
-    Rate20Test,
-    /// 15–20 min easy: better than skipping.
-    Minimum,
-}
-
-impl Kind {
-    pub fn describe(self) -> &'static str {
-        match self {
-            Self::Reference => "reference row: 20 min at rate 20, about 53 W",
-            Self::Easy => "easy row: rate 18–20, heart rate in zone 2 or below",
-            Self::Steady => "steady row: zone 2, rate 18–20",
-            Self::RateSteps => "rate steps: 4 × 5 min at rate 20 / 22 / 24 / 22, 2 min easy between, same form at every rate",
-            Self::Rate20Test => "rate-20 test: 20 min held at exactly 20 spm, best steady power",
-            Self::Minimum => "minimum session: easy, rate 18–20",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,9 +53,10 @@ impl Proposal {
             Kind::Steady => "steady",
             Kind::Rate20Test => "rate20",
             Kind::RateSteps => "rate-steps",
+            Kind::FourByFour => "four-by-four",
         };
         let mut cmd = format!("rowctl record --plan {preset} --speak");
-        if !matches!(self.kind, Kind::Reference | Kind::Rate20Test | Kind::RateSteps) {
+        if !self.kind.is_fixed() {
             cmd += &format!(" --minutes {}", self.minutes.1);
         }
         if let Some(f) = self.focus {
@@ -96,10 +68,6 @@ impl Proposal {
         cmd
     }
 
-    /// What to set on the PM5 by hand, when the workout has structure.
-    pub fn pm5_setup(&self) -> Option<&'static str> {
-        (self.kind == Kind::RateSteps).then_some("intervals 4 × 5:00 work / 2:00 rest; rate 20, 22, 24, 22")
-    }
 }
 
 /// Rows shorter than this are warm-ups or false starts.
@@ -178,7 +146,7 @@ pub fn propose(rows: &[Row], today: i64, readiness: Level, focus: Option<Fault>)
     if let (Some(g), Phase::Build { .. }) = (restarted_after, phase) {
         why.push(format!("back after {g} days: an easy week before intensity"));
         phase = Phase::EasyWeek;
-        if matches!(kind, Kind::RateSteps | Kind::Rate20Test) {
+        if kind.is_hard() {
             kind = Kind::Easy;
             minutes = (20, 30);
         }
@@ -191,7 +159,7 @@ pub fn propose(rows: &[Row], today: i64, readiness: Level, focus: Option<Fault>)
             minutes = (15, 20);
         }
         Level::Red => why.push("readiness red: the reference row can wait a day if you feel it".into()),
-        Level::Amber if matches!(kind, Kind::RateSteps | Kind::Rate20Test) => {
+        Level::Amber if kind.is_hard() => {
             why.push("readiness amber: no intensity today".into());
             kind = Kind::Steady;
             minutes = (30, 35);
@@ -213,12 +181,12 @@ pub fn propose(rows: &[Row], today: i64, readiness: Level, focus: Option<Fault>)
     }
 }
 
-/// The weekly template: 2 steady, 1 rate work, benchmark when due, a lighter
-/// fourth week.
+/// The weekly template: 2 steady, 1 hard row (rate steps and the 4×4 in
+/// turn), the benchmark when due, a lighter fourth week.
 fn build(block: &[&Row], today: i64, week: u32, why: &mut Vec<String>) -> (Kind, (u32, u32), Phase) {
     let phase = Phase::Build { week };
     let this_week: Vec<&&Row> = block.iter().filter(|r| r.day > today - 7).collect();
-    let did = |plan: &str| this_week.iter().any(|r| r.plan.as_deref() == Some(plan));
+    let hard = |r: &&Row| r.plan.as_deref().and_then(Kind::from_name).filter(|k| matches!(k, Kind::RateSteps | Kind::FourByFour));
     let tested = block.iter().any(|r| r.plan.as_deref() == Some("rate20"));
     let lighter = week.is_multiple_of(4);
     let steady = if lighter { (25, 30) } else { (30, 45) };
@@ -233,9 +201,16 @@ fn build(block: &[&Row], today: i64, week: u32, why: &mut Vec<String>) -> (Kind,
         why.push(format!("build week {week}"));
     }
     let steadies = this_week.iter().filter(|r| matches!(r.plan.as_deref(), Some("steady" | "easy") | None)).count();
-    if !lighter && !did("rate_steps") && steadies >= 1 {
-        why.push("one rate session a week, once the steady rows are in".into());
-        return (Kind::RateSteps, (30, 35), phase);
+    if !lighter && !this_week.iter().any(|r| hard(r).is_some()) && steadies >= 1 {
+        // Rate steps build power per stroke at a set rate, the 4×4 the
+        // engine: each in turn, rate steps first.
+        let last = block.iter().rev().find_map(hard);
+        let kind = if last == Some(Kind::RateSteps) { Kind::FourByFour } else { Kind::RateSteps };
+        why.push(match last {
+            Some(k) => format!("one hard row a week once the steady rows are in; {} last time", k.label()),
+            None => "one hard row a week once the steady rows are in".into(),
+        });
+        return (kind, kind.minutes(), phase);
     }
     (Kind::Steady, steady, phase)
 }
@@ -294,6 +269,30 @@ mod tests {
         let mut done = rows.to_vec();
         done.push(row(TODAY - 1, Some("rate_steps")));
         assert_eq!(propose(&done, TODAY, Level::Green, None).kind, Kind::Steady);
+    }
+
+    #[test]
+    fn hard_rows_take_turns() {
+        // Build week 2: rate steps last week, a steady row this week → the 4×4.
+        let rows = [
+            reference(TODAY - 17, Ramp::OneWeek),
+            row(TODAY - 9, Some("steady")),
+            row(TODAY - 8, Some("rate_steps")),
+            row(TODAY - 2, Some("steady")),
+        ];
+        let p = propose(&rows, TODAY, Level::Green, None);
+        assert_eq!((p.kind, p.minutes), (Kind::FourByFour, Kind::FourByFour.minutes()));
+        assert!(p.why.iter().any(|w| w.contains("rate steps last time")), "{:?}", p.why);
+        // The 4×4 done this week counts as the week's hard row.
+        let mut done = rows.to_vec();
+        done.push(row(TODAY - 1, Some("four_by_four")));
+        assert_eq!(propose(&done, TODAY, Level::Green, None).kind, Kind::Steady);
+        // And next week (the benchmark done) it's rate steps again.
+        let mut later = done.clone();
+        later.extend([row(TODAY + 3, Some("rate20")), row(TODAY + 5, Some("steady"))]);
+        assert_eq!(propose(&later, TODAY + 7, Level::Green, None).kind, Kind::RateSteps);
+        // Amber readiness swaps it for a steady row.
+        assert_eq!(propose(&rows, TODAY, Level::Amber, None).kind, Kind::Steady);
     }
 
     #[test]

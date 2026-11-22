@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use analysis::cues::{FocusCoach, Pacer, Targets};
+use analysis::workout::{Kind, Workout};
 use analysis::strokes::{StrokeAssembler, StrokeRecord};
 use analysis::technique::{Fault, LiveTechnique};
 use analysis::zones::HeartProfile;
@@ -15,7 +16,7 @@ use recording::{FileWriter, Header};
 use tokio::sync::mpsc;
 
 use crate::ctx::Ctx;
-use crate::plan::{Plan, describe_targets, parse_rate, parse_watts};
+use crate::plan::{Plan, describe_workout, parse_rate, parse_watts};
 use crate::render::{clock, record_line};
 use crate::review;
 use crate::simulate::FaultArg;
@@ -131,7 +132,7 @@ impl LiveArgs {
 
     fn setup(&self, focus: Option<Fault>) -> Setup {
         Setup {
-            plan: self.plan,
+            kind: self.plan.map(Plan::kind),
             rate: self.rate,
             watts: self.watts,
             zone: self.zone,
@@ -147,6 +148,7 @@ impl LiveArgs {
                     fault: self.sim_fault.map(Into::into),
                     ..Default::default()
                 }),
+                intervals: self.plan.and_then(|p| p.kind().intervals()).map(sim_intervals),
                 ..Default::default()
             }),
             pm5: !self.no_pm5,
@@ -231,11 +233,20 @@ impl HeartPick {
     }
 }
 
-/// What one row is set up as: a preset and its targets (flags override the
-/// preset's), and the technique focus.
+/// The simulated rower rows a workout's intervals as the PM5 would time them.
+pub fn sim_intervals(i: analysis::workout::Intervals) -> sim::SimIntervals {
+    sim::SimIntervals {
+        count: i.count,
+        work_s: i.work_s,
+        rest_s: i.rest_s,
+    }
+}
+
+/// What one row is set up as: a workout, its length where the plan (or a
+/// flag) sets it, flags' targets over the workout's, and the technique focus.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Setup {
-    pub plan: Option<Plan>,
+    pub kind: Option<Kind>,
     pub rate: Option<(f64, f64)>,
     pub watts: Option<(f64, f64)>,
     pub zone: Option<u8>,
@@ -244,20 +255,27 @@ pub struct Setup {
 }
 
 impl Setup {
-    /// The pacing targets; `None` from `zone` without a heart profile.
-    pub fn targets(&self, heart: Option<&HeartProfile>) -> (Targets, bool) {
-        let mut targets = self.plan.map(|p| p.targets(heart)).unwrap_or_default();
-        targets.rate = self.rate.or(targets.rate);
-        targets.watts = self.watts.or(targets.watts);
-        targets.minutes = self.minutes.or(targets.minutes);
-        let mut zone_ok = true;
-        if let Some(z) = self.zone {
-            match heart.and_then(|h| h.zone_bpm(z)) {
-                Some((_, top)) => targets.hr_max = Some(top),
-                None => zone_ok = false,
+    /// The workout; `false` when `zone` needs a heart profile there isn't.
+    pub fn workout(&self, heart: Option<&HeartProfile>) -> (Workout, bool) {
+        let mut w = match self.kind {
+            Some(k) => k.workout(heart),
+            None => Workout::Piece {
+                minutes: None,
+                targets: Targets::default(),
+            },
+        };
+        if let Some(m) = self.minutes {
+            w.set_minutes(m);
+        }
+        let zone_top = self.zone.map(|z| heart.and_then(|h| h.zone_bpm(z)).map(|(_, top)| top));
+        for t in w.targets_mut() {
+            t.rate = self.rate.or(t.rate);
+            t.watts = self.watts.or(t.watts);
+            if let Some(Some(top)) = zone_top {
+                t.hr_max = Some(top);
             }
         }
-        (targets, zone_ok)
+        (w, zone_top != Some(None))
     }
 }
 
@@ -309,26 +327,27 @@ pub struct Coach {
     pub screens: Option<LiveSender>,
     /// Cues given since the recorder last took them.
     said: Vec<String>,
-    /// What the row aims for, for the screens.
-    targets: Targets,
 }
 
 impl Coach {
     pub fn new(setup: &Setup, ctx: Option<&Ctx>, speaker: Option<Speaker>) -> Self {
         let heart = ctx.and_then(|c| c.heart()).map(|h| h.0);
-        if let Some(p) = setup.plan {
-            println!("{}", p.describe());
+        if let Some(k) = setup.kind {
+            println!("{}", k.describe());
+            if let Some(pm5) = k.pm5_setup() {
+                println!("Set on the PM5: {pm5}");
+            }
         }
-        let (targets, zone_ok) = setup.targets(heart.as_ref());
+        let (workout, zone_ok) = setup.workout(heart.as_ref());
         if !zone_ok {
             eprintln!("--zone needs a heart profile (see rowctl profile); ignoring it");
         }
         if let Some(c) = ctx {
             println!("Zones from {}", c.heart_note());
         }
-        let pacer = (!targets.is_empty()).then(|| {
-            println!("Cues: {}", describe_targets(&targets));
-            Pacer::new(targets.clone())
+        let pacer = (!workout.is_empty()).then(|| {
+            println!("Cues: {}", describe_workout(&workout));
+            Pacer::new(workout)
         });
         if let Some(f) = setup.focus {
             println!("Focus: {} (\"{}\")", f.label(), f.cue());
@@ -342,7 +361,14 @@ impl Coach {
             speaker,
             screens: None,
             said: Vec::new(),
-            targets,
+        }
+    }
+
+    /// A PM5 status poll: for intervals, the call as work or rest begins.
+    pub fn pm5(&mut self, s: &Pm5Status, t_us: i64) {
+        let cue = s.workout_state.zip(self.pacer.as_mut()).and_then(|(code, p)| p.pm5(code, t_us));
+        if let Some(c) = cue {
+            self.cue(&c.text());
         }
     }
 
@@ -407,14 +433,29 @@ impl Coach {
         );
     }
 
-    /// The focus, the targets and the good stroke on this rower's body, for
-    /// screens that just connected (and as the body is measured again).
-    pub fn publish_focus(&self) {
+    /// The focus, the targets (the current interval's, for intervals) and the
+    /// good stroke on this rower's body, for screens that just connected (and
+    /// as the body is measured again).
+    pub fn publish_focus(&self, now_us: i64) {
         if let Some(hub) = &self.screens {
             let fault = self.focus.as_ref().map(|f| f.focus());
             live::publish(hub, &LiveMsg::Focus { fault, cue: fault.map(|f| f.cue()) });
-            let targets = &self.targets;
-            live::publish(hub, &LiveMsg::Targets { targets, rhythm: targets.rhythm() });
+            let none = Targets::default();
+            let pacer = self.pacer.as_ref();
+            let targets = pacer.and_then(Pacer::targets).unwrap_or(&none);
+            let minutes = match pacer.map(Pacer::workout) {
+                Some(Workout::Piece { minutes, .. }) => *minutes,
+                _ => None,
+            };
+            live::publish(
+                hub,
+                &LiveMsg::Targets {
+                    targets,
+                    rhythm: targets.rhythm(),
+                    minutes,
+                    interval: pacer.and_then(|p| p.interval(now_us)),
+                },
+            );
             if let Some(target) = self.technique.target() {
                 live::publish(hub, &LiveMsg::Target(&target));
             }
@@ -512,7 +553,7 @@ pub async fn record(args: LiveArgs, out: Option<PathBuf>, note: Option<String>) 
     let mut header = Header::new(clock.now_us(), concat!("rowctl ", env!("CARGO_PKG_VERSION")));
     header.note = note;
     header.simulated = args.sim;
-    header.plan = args.plan.map(|p| p.name().to_owned());
+    header.plan = args.plan.map(|p| p.kind().name().to_owned());
     print_readiness(ctx.as_ref()).await;
     let focus = choose_focus(&args, ctx.as_ref()).await;
     header.focus = focus.map(|f| f.label().to_owned());
@@ -588,6 +629,8 @@ async fn run(
     let mut hearts = HeartPick::default();
     let mut ticker = tokio::time::interval(STATUS_EVERY);
     ticker.tick().await;
+    // The row screen's countdowns move every second.
+    let mut screens = tokio::time::interval(Duration::from_secs(1));
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
     let seconds = args.seconds;
@@ -612,8 +655,10 @@ async fn run(
                 if let Some(msg) = view.apply(&ev) {
                     println!("{msg}");
                 }
-                if let EventKind::Pose(p) = &ev.kind {
-                    coach.pose(p);
+                match &ev.kind {
+                    EventKind::Pose(p) => coach.pose(p),
+                    EventKind::Pm5Status(s) => coach.pm5(s, ev.t_us),
+                    _ => {}
                 }
                 if let Some(mut r) = asm.push(&ev) {
                     view.strokes += 1;
@@ -621,17 +666,17 @@ async fn run(
                     println!("{}", record_line(&r, start_us, view.heart.as_ref()));
                     coach.publish_stroke(&r);
                     coach.react(&r, view.strokes);
-                    for cue in coach.take_said(ev.t_us) {
-                        if let Some(w) = writer.as_mut() {
-                            w.write(&cue)?;
-                        }
+                }
+                for cue in coach.take_said(ev.t_us) {
+                    if let Some(w) = writer.as_mut() {
+                        w.write(&cue)?;
                     }
                 }
             }
             _ = ticker.tick() => {
                 println!("{}", view.status_line(clock.now_us() - start_us));
-                coach.publish_focus();
             }
+            _ = screens.tick() => coach.publish_focus(clock.now_us()),
             _ = &mut ctrl_c => break,
             _ = &mut deadline => break,
         }

@@ -13,7 +13,7 @@ use crate::{Api, ApiError};
 pub struct Today {
     pub proposal: Proposal,
     pub command: String,
-    pub pm5_setup: Option<&'static str>,
+    pub pm5_setup: Option<String>,
     pub readiness: Readiness,
 }
 
@@ -28,7 +28,7 @@ pub async fn get(State(api): State<Api>) -> Result<Json<Today>, ApiError> {
     let proposal = propose(&rows, today, ready.level, focus);
     Ok(Json(Today {
         command: proposal.command(),
-        pm5_setup: proposal.pm5_setup(),
+        pm5_setup: proposal.kind.pm5_setup(),
         proposal,
         readiness: ready,
     }))

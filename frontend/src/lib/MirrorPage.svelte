@@ -253,7 +253,7 @@
 
 <div class="mirror">
   <header>
-    {#if row}<RowBar {row} minutes={targets?.minutes} onstop={stopRow} />{/if}
+    {#if row}<RowBar {row} minutes={targets?.minutes} interval={targets?.interval} onstop={stopRow} />{/if}
     <div class="top">
     <div class="numbers">
       <Gauge label="spm" value={last?.rate ?? null} digits={1} band={targets?.rate} hints={{ low: 'quicker', high: 'slower' }} />

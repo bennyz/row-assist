@@ -1,9 +1,10 @@
 //! Workout presets for `record` and `watch`, and target parsing.
 
 use analysis::cues::Targets;
-use analysis::zones::HeartProfile;
+use analysis::workout::{Kind, Workout, mmss};
 use clap::ValueEnum;
 
+/// The workouts, by their command-line names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Plan {
     /// 20 min at rate 20, 48–58 W: the comeback-ramp reference row
@@ -14,62 +15,21 @@ pub enum Plan {
     Steady,
     /// The benchmark: 20 min held at exactly rate 20, best steady power
     Rate20,
-    /// Rate steps (set the intervals on the PM5): only time calls
+    /// Rate steps: 4 × 5 min at rate 20 / 22 / 24 / 22 (set the intervals on the PM5)
     RateSteps,
+    /// Norwegian 4×4: 4 × 4 min hard, 3 min easy between (set the intervals on the PM5)
+    FourByFour,
 }
 
 impl Plan {
-    /// Stored in the recording header.
-    pub fn name(self) -> &'static str {
+    pub fn kind(self) -> Kind {
         match self {
-            Self::Reference => "reference",
-            Self::Easy => "easy",
-            Self::Steady => "steady",
-            Self::Rate20 => "rate20",
-            Self::RateSteps => "rate_steps",
-        }
-    }
-
-    pub fn describe(self) -> &'static str {
-        match self {
-            Self::Reference => "Reference row: 20 min at rate 20, about 53 W, same drag factor as every reference row",
-            Self::Easy => "Easy row: 20–25 min at rate 18–20, heart rate in zone 2 or below",
-            Self::Steady => "Steady row: 30–45 min in zone 2 at rate 18–20",
-            Self::Rate20 => "Rate-20 test: 20 min at exactly 20 spm, as much steady power as you can hold",
-            Self::RateSteps => "Rate steps: 4 × 5 min at rate 20 / 22 / 24 / 22 with 2 min easy between, set on the PM5",
-        }
-    }
-
-    pub fn targets(self, heart: Option<&HeartProfile>) -> Targets {
-        match self {
-            Self::Reference => Targets {
-                rate: Some((19.0, 21.0)),
-                watts: Some((48.0, 58.0)),
-                hr_max: None,
-                minutes: Some(20.0),
-            },
-            Self::Easy => Targets {
-                rate: Some((17.5, 20.5)),
-                watts: None,
-                hr_max: heart.and_then(|h| h.zone_bpm(2)).map(|(_, top)| top),
-                minutes: Some(20.0),
-            },
-            Self::Steady => Targets {
-                rate: Some((17.5, 20.5)),
-                watts: None,
-                hr_max: heart.and_then(|h| h.zone_bpm(2)).map(|(_, top)| top),
-                minutes: Some(30.0),
-            },
-            Self::Rate20 => Targets {
-                rate: Some((19.5, 20.5)),
-                watts: None,
-                hr_max: None,
-                minutes: Some(20.0),
-            },
-            Self::RateSteps => Targets {
-                minutes: Some(34.0),
-                ..Default::default()
-            },
+            Self::Reference => Kind::Reference,
+            Self::Easy => Kind::Easy,
+            Self::Steady => Kind::Steady,
+            Self::Rate20 => Kind::Rate20Test,
+            Self::RateSteps => Kind::RateSteps,
+            Self::FourByFour => Kind::FourByFour,
         }
     }
 }
@@ -121,10 +81,29 @@ pub fn describe_targets(t: &Targets) -> String {
     if let Some(max) = t.hr_max {
         parts.push(format!("HR under {max:.0}"));
     }
-    if let Some(m) = t.minutes {
-        parts.push(format!("{} min", num(m)));
-    }
     parts.join(", ")
+}
+
+/// "rate 19–21, 48–58 W, 20 min", or "4 × 4:00 (3:00 rest): rate 24–28,
+/// HR under 175"; intervals with different rates list them.
+pub fn describe_workout(w: &Workout) -> String {
+    match w {
+        Workout::Piece { minutes, targets } => {
+            let mut parts: Vec<String> = Some(describe_targets(targets)).filter(|s| !s.is_empty()).into_iter().collect();
+            parts.extend(minutes.map(|m| format!("{} min", num(m))));
+            parts.join(", ")
+        }
+        Workout::Intervals { work_s, rest_s, work } => {
+            let head = format!("{} × {} ({} rest)", work.len(), mmss(*work_s), mmss(*rest_s));
+            let body = if work.windows(2).all(|p| p[0] == p[1]) {
+                work.first().map(describe_targets).unwrap_or_default()
+            } else {
+                let rates: Vec<String> = work.iter().filter_map(|t| t.rate).map(|(lo, hi)| num((lo + hi) / 2.0)).collect();
+                format!("rate {}", rates.join(", "))
+            };
+            if body.is_empty() { head } else { format!("{head}: {body}") }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -144,13 +123,22 @@ mod tests {
     }
 
     #[test]
-    fn easy_ceiling_is_top_of_zone_2() {
-        let h = HeartProfile::new(60.0, 190.0, None).unwrap();
-        assert_eq!(Plan::Easy.targets(Some(&h)).hr_max, Some(151.0));
-        assert_eq!(Plan::Easy.targets(None).hr_max, None);
+    fn descriptions() {
+        assert_eq!(describe_workout(&Kind::Reference.workout(None)), "rate 19–21, 48–58 W, 20 min");
+        let h = analysis::zones::HeartProfile::new(60.0, 184.0, None).unwrap();
         assert_eq!(
-            describe_targets(&Plan::Reference.targets(None)),
-            "rate 19–21, 48–58 W, 20 min"
+            describe_workout(&Kind::FourByFour.workout(Some(&h))),
+            "4 × 4:00 (3:00 rest): rate 24–28, HR under 175"
         );
+        assert_eq!(describe_workout(&Kind::RateSteps.workout(None)), "4 × 5:00 (2:00 rest): rate 20, 22, 24, 22");
+    }
+
+    /// Every workout has a command-line name, and it's the same workout.
+    #[test]
+    fn every_kind_but_the_minimum_session_has_a_preset() {
+        for kind in Kind::ALL {
+            let preset = Plan::value_variants().iter().find(|p| p.kind() == kind);
+            assert_eq!(preset.is_some(), kind != Kind::Minimum, "{kind:?}");
+        }
     }
 }

@@ -57,6 +57,7 @@ pub fn run(out: &Path, a: SimArgs) -> Result<()> {
             fault: a.fault.map(SimFault::from),
             ..Default::default()
         }),
+        intervals: a.plan.and_then(|p| p.kind().intervals()).map(crate::live::sim_intervals),
         ..Default::default()
     };
     let duration = Duration::from_secs_f64(a.minutes * 60.0);
@@ -65,7 +66,7 @@ pub fn run(out: &Path, a: SimArgs) -> Result<()> {
     let mut header = Header::new(start_us, concat!("rowctl ", env!("CARGO_PKG_VERSION"), " simulate"));
     header.simulated = true;
     header.note = a.note;
-    header.plan = a.plan.map(|p| p.name().to_owned());
+    header.plan = a.plan.map(|p| p.kind().name().to_owned());
 
     let mut w = FileWriter::create(out, &header)?;
     for ev in generate(cfg, start_us, duration) {

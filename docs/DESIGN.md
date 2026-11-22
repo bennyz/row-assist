@@ -298,6 +298,18 @@ Judged on the median of the last 6 strokes; silent for the first 60 s; ≥ 30 s 
 heart-rate cue blocks the power cue (never "harder" while HR is over the ceiling). Halfway and
 time calls always get through.
 
+**Intervals (built, `analysis::workout`):** a workout is one piece, or work and rest intervals
+with targets for each work interval. The PM5 is set up for the intervals by hand (the row screen
+says how), and its workout state (PM CSAFE `0x8D`, recorded in every `Pm5Status`) moves the
+coach: "Go. 2 of 4." (with the interval's rate or power when it has them; "Last one." for the
+last) as work begins, "Rest. Paddle easy." as it ends, "Time. Paddle down." after the last.
+Following the PM5 rather than a clock keeps the calls on the monitor's intervals after a warm-up
+in the same row. Corrections come only in work, 30 s in, against that interval's targets, and
+the row doesn't end while the PM5 times a rest, sat out or not. 0 (waiting) and 1 (a single
+piece) are seen on hardware; the interval codes (3 rest, 4–5 work, 6–9 the changes between, 10–12
+ended) follow the spec and are still to be seen. `rowctl simulate --plan four-by-four` and
+`watch --sim --plan …` row them as a PM5 would.
+
 ### 5.3 Mirror (visual feedback)
 
 The front screen shows the rower's own position, drawn from landmarks (no video streaming):
@@ -472,12 +484,18 @@ and a second Shortcut was a second thing to stop running unnoticed.
 **Built (`analysis::planner`, `rowctl plan`):** the rules below, over every row so far (logbook
 and app sessions, uploads of the same row counted once) and today's readiness. A gap over 21
 days starts a block with a reference row; its verdict sets the comeback ramp (1/2/3 weeks of
-easy rows); then build weeks: rate steps once a week after a steady row, otherwise steady
-rows, a lighter fourth week, the rate-20 test after 3 build weeks (once per block). A gap of
-8–21 days turns intensity into an easy week. Amber → no intensity; red → minimum session.
+easy rows); then build weeks: one hard row a week after a steady row (rate steps and the
+Norwegian 4×4 in turn, rate steps first), otherwise steady rows, a lighter fourth week, the
+rate-20 test after 3 build weeks (once per block). A gap of 8–21 days turns intensity into an
+easy week. Amber → no intensity; red → minimum session.
 `rowctl plan` prints the session, the reasons, and the exact `rowctl record --plan …` command;
-the presets record their name (`reference`, `easy`, `steady`, `rate20`, `rate_steps`) so the
-planner knows what was rowed.
+the workouts (`analysis::workout::Kind`) record their name (`reference`, `easy`, `steady`,
+`rate20`, `rate_steps`, `four_by_four`) so the planner knows what was rowed.
+
+**Picking another workout (built):** the row screen's "Row something else…" sets the next row up
+as any workout instead of the plan's (`POST /api/row/workout`, between rows only). The pick
+holds through re-planning (Watch data, midnight) until it's rowed; the recording's header names
+what was rowed, so the planner counts it for what it was.
 
 ### 8.1 Consistency rules
 
@@ -505,7 +523,8 @@ Fitness after a long gap is unknown, so the ramp measures it:
 ### 8.3 Weekly template after the ramp
 
 - 2 × steady: zone 2, 30–45 min, rate 18–20, technique focus.
-- 1 × rate/intensity work: e.g. 4 × 5 min stepping rate 20/22/24 at matched form, later 6 × 500 m.
+- 1 × rate/intensity work: e.g. 4 × 5 min stepping rate 20/22/24 at matched form, later 6 × 500 m,
+  in turn with the Norwegian 4×4 (4 × 4 min at 85–95% of max HR, rate 24–28, 3 min easy between).
   Intensity only goes up once fault rates hold at that rate.
 - 1 × optional technique session: drills plus a rate ladder.
 - Volume +≤10%/week; lighter week every 4th week. Amber readiness → no intensity; red → minimum session.

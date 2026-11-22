@@ -13,6 +13,7 @@ pub mod reference;
 pub mod session;
 pub mod strokes;
 pub mod technique;
+pub mod workout;
 pub mod zones;
 
 use model::Event;

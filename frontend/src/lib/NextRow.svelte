@@ -1,27 +1,62 @@
 <script>
   // What the next row is set up as, before the first stroke: the planner's
-  // proposal, the cues, and readiness. Re-sent by the server when Watch data
-  // arrives, so it updates by itself.
+  // proposal (or a workout picked here instead), the cues, and readiness.
+  // Re-sent by the server every second, so a pick or new Watch data shows
+  // by itself.
+  import { pickWorkout } from './api.js';
   import { KINDS, READINESS, minutesLabel, timeLabel } from './format.js';
 
   let { plan, watchAt } = $props();
 
+  // What can be picked: every workout but the planner's minimum session.
+  const CHOICES = ['reference', 'easy', 'steady', 'rate_steps', 'four_by_four', 'rate20_test'];
+
   const p = $derived(plan.proposal);
-  // The reference row and the test are fixed pieces; their description says so.
-  const minutes = $derived(['reference', 'rate20_test'].includes(p.kind) ? '' : minutesLabel(p.minutes));
+  const picked = $derived(plan.kind !== p.kind);
+  // The reference row and the test are fixed pieces; their description says
+  // so. A pick's length is in its cues.
+  const minutes = $derived(picked || ['reference', 'rate20_test'].includes(p.kind) ? '' : minutesLabel(p.minutes));
   const ready = $derived(READINESS[plan.readiness.level] ?? READINESS.unknown);
+
+  let choosing = $state(false);
+  let failed = $state(false);
+  async function pick(kind) {
+    failed = false;
+    const res = await pickWorkout(kind).catch(() => null);
+    failed = !res?.ok;
+    if (!failed) choosing = false;
+  }
 </script>
 
 <section aria-label="Next row">
   <h2>Next row</h2>
-  <p class="kind">{KINDS[p.kind] ?? p.kind} <span>{minutes}</span></p>
+  <p class="kind">{KINDS[plan.kind] ?? plan.kind} <span>{minutes}</span></p>
+  {#if picked}
+    <p class="instead">
+      Instead of the planned {(KINDS[p.kind] ?? p.kind).toLowerCase()}.
+      <button class="link" onclick={() => pick(p.kind)}>Back to the plan</button>
+    </p>
+  {/if}
   {#if plan.cues}<p class="cues">Cues: {plan.cues}</p>{/if}
   {#if plan.pm5_setup}<p class="pm5">Set on the PM5: {plan.pm5_setup}</p>{/if}
-  {#if p.why.length}
+  {#if picked}
+    <p class="about">{plan.about}</p>
+  {:else if p.why.length}
     <ul>
       {#each p.why.slice(0, 3) as w (w)}<li>{w}</li>{/each}
     </ul>
   {/if}
+  {#if choosing}
+    <div class="choices" role="group" aria-label="Row instead">
+      {#each CHOICES as k (k)}
+        <button aria-pressed={plan.kind === k} onclick={() => pick(k)}>{KINDS[k]}</button>
+      {/each}
+    </div>
+    <button class="link" onclick={() => (choosing = false)}>Keep it</button>
+  {:else}
+    <button class="link" onclick={() => (choosing = true)}>Row something else…</button>
+  {/if}
+  {#if failed}<p class="failed" role="alert">Not changed: is a row under way?</p>{/if}
 
   <h2>Readiness</h2>
   <p class="level {ready.tone}"><span aria-hidden="true">{ready.mark}</span> {ready.label}</p>
@@ -56,6 +91,41 @@
   .kind span {
     font-weight: 400;
     color: var(--ink-2);
+  }
+  .instead,
+  .about {
+    margin: 0.4rem 0 0;
+    font-size: 16px;
+    color: var(--ink-2);
+  }
+  .choices {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 1rem 0 0.5rem;
+  }
+  .choices button {
+    padding: 0.45rem 0.9rem;
+    font-size: 16px;
+  }
+  .choices button[aria-pressed='true'] {
+    color: var(--ink);
+    border-color: var(--accent);
+    background: var(--accent-wash);
+  }
+  .link {
+    margin-top: 0.75rem;
+    border-color: transparent;
+    color: var(--ink-3);
+    padding-left: 0;
+    font-size: 16px;
+  }
+  .instead .link {
+    margin: 0 0 0 0.4rem;
+  }
+  .failed {
+    margin: 0.4rem 0 0;
+    color: var(--bad);
   }
   .cues,
   .pm5 {

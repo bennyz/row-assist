@@ -6,6 +6,7 @@ export const KINDS = {
   easy: 'Easy row',
   steady: 'Steady row',
   rate_steps: 'Rate steps',
+  four_by_four: 'Norwegian 4×4',
   rate20_test: 'Rate-20 test',
   minimum: 'Minimum session',
 };

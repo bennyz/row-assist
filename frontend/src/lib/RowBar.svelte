@@ -4,7 +4,18 @@
   // message; the countdown is only display.
   import { clock } from './format.js';
 
-  let { row, minutes = null, onstop } = $props();
+  // `interval`: where an interval workout is, from the coach ({stage, n, of, left_s}).
+  let { row, minutes = null, interval = null, onstop } = $props();
+
+  const stageLabel = $derived(
+    interval == null
+      ? null
+      : interval.stage === 'work'
+        ? `Work ${interval.n} of ${interval.of}`
+        : interval.stage === 'rest'
+          ? 'Rest'
+          : 'Done',
+  );
 
   // A rest shorter than this isn't worth a countdown.
   const COUNTDOWN_AFTER_S = 15;
@@ -31,6 +42,7 @@
     {:else if row.phase === 'rowing'}
       <strong class="rec"><span aria-hidden="true">●</span> Recording</strong>
       <span class="num">{clock(row.elapsed_s)}</span>{#if minutes}{' '}<span class="of">of {clock(minutes * 60)}</span>{/if} · {row.strokes} strokes
+      {#if stageLabel}· <span class="stage {interval.stage}">{stageLabel}</span>{#if interval.stage !== 'done'}{' '}<span class="num">{clock(interval.left_s)}</span> left{/if}{/if}
       {#if ending != null}<span class="ending">· saves in {clock(ending)} unless you row</span>{/if}
     {:else}
       <strong>Saving…</strong>
@@ -50,6 +62,16 @@
 </div>
 
 <style>
+  .stage {
+    font-weight: 600;
+  }
+  .stage.work {
+    color: var(--accent);
+  }
+  .stage.rest,
+  .stage.done {
+    color: var(--ink-2);
+  }
   .bar {
     display: flex;
     align-items: center;
