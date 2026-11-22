@@ -12,6 +12,7 @@ export const getSession = (id) => getJson(`/api/sessions/${id}`);
 export const getHealth = () => getJson('/api/health');
 export const getProgress = () => getJson('/api/progress');
 export const getToday = () => getJson('/api/today');
+export const getPlan = () => getJson('/api/plan');
 export const getPhone = () => getJson('/api/phone');
 export const getRow = () => getJson('/api/row');
 export const stopRow = () => fetch('/api/row/stop', { method: 'POST' });

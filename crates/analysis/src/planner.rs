@@ -181,6 +181,29 @@ pub fn propose(rows: &[Row], today: i64, readiness: Level, focus: Option<Fault>)
     }
 }
 
+/// The rows ahead if each is rowed as proposed, three a week (2, 2, then 3
+/// days apart) from `today`, for `weeks` weeks: what the plan looks like
+/// from here, not a promise. It re-plans after every real row. A reference
+/// row's verdict can't be known ahead, so its ramp counts as the middle one;
+/// readiness is today's for today and unknown after.
+pub fn outline(rows: &[Row], today: i64, readiness: Level, focus: Option<Fault>, weeks: u32) -> Vec<(i64, Proposal)> {
+    let mut rows = rows.to_vec();
+    let mut out = Vec::new();
+    let mut day = today;
+    for n in 0..(weeks * ROWS_PER_WEEK) as usize {
+        let p = propose(&rows, day, if day == today { readiness } else { Level::Unknown }, focus);
+        rows.push(Row {
+            day,
+            minutes: p.minutes.1 as f64,
+            plan: Some(p.kind.name().to_owned()),
+            ramp: None,
+        });
+        out.push((day, p));
+        day += [2, 2, 3][n % 3];
+    }
+    out
+}
+
 /// The weekly template: 2 steady, 1 hard row (rate steps and the 4×4 in
 /// turn), the benchmark when due, a lighter fourth week.
 fn build(block: &[&Row], today: i64, week: u32, why: &mut Vec<String>) -> (Kind, (u32, u32), Phase) {
@@ -304,6 +327,20 @@ mod tests {
         assert_eq!((p.kind, p.phase), (Kind::Rate20Test, Phase::Build { week: 4 }));
         rows.push(row(TODAY - 1, Some("rate20")));
         assert_ne!(propose(&rows, TODAY, Level::Green, None).kind, Kind::Rate20Test);
+    }
+
+    #[test]
+    fn the_outline_runs_the_block_from_the_reference_row() {
+        let ahead = outline(&[], TODAY, Level::Green, None, 6);
+        let kinds: Vec<Kind> = ahead.iter().map(|(_, p)| p.kind).collect();
+        assert_eq!(kinds.len(), 18);
+        assert_eq!(kinds[0], Kind::Reference);
+        // Two easy weeks (the middle ramp), then build weeks.
+        assert!(ahead.iter().filter(|(d, _)| (TODAY + 1..TODAY + 14).contains(d)).all(|(_, p)| p.kind == Kind::Easy));
+        let hard: Vec<Kind> = kinds.iter().copied().filter(|k| matches!(k, Kind::RateSteps | Kind::FourByFour)).collect();
+        assert_eq!(&hard[..2], [Kind::RateSteps, Kind::FourByFour], "hard rows take turns");
+        assert!(kinds.contains(&Kind::Rate20Test), "the benchmark within six weeks");
+        assert!(ahead.windows(2).all(|w| w[1].0 > w[0].0));
     }
 
     #[test]

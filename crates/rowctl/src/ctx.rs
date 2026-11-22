@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use analysis::planner::Row;
 use analysis::reference::Piece;
 use analysis::technique::Fault;
+use analysis::workout::{Kind, Progression};
 use analysis::zones::{HeartProfile, Source};
 use anyhow::Result;
 use store::SqlitePool;
@@ -89,5 +90,11 @@ impl Ctx {
     /// Every row so far for the planner.
     pub async fn rows(&self) -> Result<Vec<Row>> {
         store::history::planner_rows(&self.pool).await
+    }
+
+    /// The next `kind` interval workout's power, from the last real one
+    /// with its work intervals.
+    pub async fn progression(&self, kind: Kind) -> Result<Option<Progression>> {
+        store::history::progression(&self.pool, kind, self.heart().map(|h| h.0).as_ref()).await
     }
 }

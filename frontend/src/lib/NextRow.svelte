@@ -38,6 +38,7 @@
     </p>
   {/if}
   {#if plan.cues}<p class="cues">Cues: {plan.cues}</p>{/if}
+  {#if plan.progress}<p class="progress">{plan.progress}</p>{/if}
   {#if plan.pm5_setup}<p class="pm5">Set on the PM5: {plan.pm5_setup}</p>{/if}
   {#if picked}
     <p class="about">{plan.about}</p>
@@ -91,6 +92,11 @@
   .kind span {
     font-weight: 400;
     color: var(--ink-2);
+  }
+  .progress {
+    margin: 0.4rem 0 0;
+    font-size: 16px;
+    color: var(--accent);
   }
   .instead,
   .about {

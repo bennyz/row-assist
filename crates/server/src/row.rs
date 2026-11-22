@@ -49,6 +49,8 @@ pub struct Plan {
     pub kind: Kind,
     /// What `kind` is, in a line.
     pub about: &'static str,
+    /// For an interval workout: its power from how the last one went, and why.
+    pub progress: Option<String>,
     pub proposal: Proposal,
     pub readiness: Readiness,
     pub pm5_setup: Option<String>,

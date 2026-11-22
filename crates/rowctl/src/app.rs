@@ -29,6 +29,7 @@ use tokio::sync::{Notify, mpsc, watch};
 
 use crate::ctx::{Ctx, today};
 use crate::live::{Coach, Devices, HeartPick, Setup, View, spawn_devices, start_speaker};
+use analysis::workout::Progression;
 use crate::plan::describe_workout;
 use crate::planning::{setup_for, today_plan};
 use crate::render::record_line;
@@ -208,6 +209,8 @@ struct Runner {
     setup: Setup,
     /// A workout picked on the row screen instead of the plan's.
     picked: Option<Kind>,
+    /// Each interval workout's power from last time, as of the last plan.
+    progressions: Vec<(Kind, Progression)>,
     plan_day: i64,
     coach: Coach,
     asm: StrokeAssembler,
@@ -252,6 +255,7 @@ impl Runner {
             },
             setup: Setup::default(),
             picked: None,
+            progressions: Vec::new(),
             plan_day: 0,
             coach,
             asm: StrokeAssembler::new(),
@@ -284,10 +288,19 @@ impl Runner {
         };
         println!("Next row: {}", proposal.kind.describe());
         self.plan_day = day;
+        self.progressions.clear();
+        for k in Kind::ALL.into_iter().filter(|k| k.intervals().is_some()) {
+            match self.ctx.progression(k).await {
+                Ok(Some(p)) => self.progressions.push((k, p)),
+                Ok(None) => {}
+                Err(e) => eprintln!("Couldn't read the last {}: {e:#}", k.label()),
+            }
+        }
         let kind = self.picked.unwrap_or(proposal.kind);
         self.state.plan = Some(row::Plan {
             kind,
             about: kind.describe(),
+            progress: None,
             pm5_setup: None,
             cues: String::new(),
             proposal,
@@ -327,6 +340,8 @@ impl Runner {
                 ..Default::default()
             }
         };
+        self.setup.progression = self.progressions.iter().find(|(k, _)| *k == plan.kind).map(|(_, p)| p.clone());
+        plan.progress = self.setup.progression.as_ref().map(|p| p.note.clone());
         let heart = self.ctx.heart().map(|h| h.0);
         plan.pm5_setup = plan.kind.pm5_setup();
         plan.cues = describe_workout(&self.setup.workout(heart.as_ref()).0);
@@ -688,6 +703,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_last_four_by_four_sets_the_next_one_s_power() {
+        let (mut r, state, dir) = runner("progress").await;
+        let interval = |w: f64| analysis::session::WorkInterval {
+            seg: analysis::session::Segment {
+                watts: Some(w),
+                spm: Some(26.0),
+                ..Default::default()
+            },
+            hr_peak: Some(165.0),
+        };
+        let meta = store::sessions::SessionMeta {
+            started_at_us: Clock::start().now_us() - 86_400_000_000,
+            recording: "/nowhere/yesterday.rowrec".into(),
+            note: None,
+            plan: Some("four_by_four".into()),
+            simulated: false,
+        };
+        let summary = analysis::session::Summary {
+            work: [100.0, 101.0, 99.0, 100.0].map(interval).to_vec(),
+            ..Default::default()
+        };
+        store::sessions::save_session(&r.ctx.pool, &meta, &summary, &[]).await.unwrap();
+        r.replan().await;
+        r.pick(Kind::FourByFour);
+        let plan = state.borrow().plan.clone().unwrap();
+        assert_eq!(plan.progress.as_deref(), Some("Last 4×4: 100 W average, held all four: 103 W this time."));
+        assert!(plan.cues.contains("99–107 W"), "{}", plan.cues);
+        r.pick(Kind::Steady);
+        assert_eq!(state.borrow().plan.as_ref().unwrap().progress, None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn an_interval_workout_is_called_from_the_pm5_and_a_rest_sat_out_doesnt_end_it() {
         let (mut r, state, dir) = runner("intervals").await;
         r.pick(Kind::FourByFour);
@@ -723,6 +771,9 @@ mod tests {
             .collect();
         // The PM5 was set for 2: it ends there, and so does the coach.
         assert_eq!(cues, ["Go. 1 of 4. Rate 26.", "Rest. Paddle easy.", "Go. 2 of 4. Rate 26.", "Time. Paddle down."]);
+        let work = &saved[0].summary.work;
+        assert_eq!(work.len(), 2, "the review knows each work interval");
+        assert!(work.iter().all(|w| w.seg.watts.is_some_and(|x| (x - 83.0).abs() < 5.0)), "{work:?}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

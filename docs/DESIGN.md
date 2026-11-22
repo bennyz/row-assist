@@ -497,6 +497,22 @@ as any workout instead of the plan's (`POST /api/row/workout`, between rows only
 holds through re-planning (Watch data, midnight) until it's rowed; the recording's header names
 what was rowed, so the planner counts it for what it was.
 
+**Power from last time (built, `workout::progression`):** an interval workout's work intervals
+are summed up from the PM5's workout state (`Summary::work`: power, rate, mean and peak heart
+rate each), and the next one of the same kind gets its power from them, a ±4% band per work
+interval. The 4×4: the last one's mean power, 3% more when it was held all the way (all four
+done, the last within 3% of the first, heart rate never over 95% of max); otherwise the same.
+Rate steps: each step's own power, 3% more when every step was rowed at its rate. The first of
+each goes by heart rate (the 4×4) or by rate alone (rate steps). The row screen says why
+("Last 4×4: 109 W average, held all four: 112 W this time."). Steady and easy rows need no
+such rule: capped by heart rate, their power rises as fitness does.
+
+**The Plan page (built, `/plan`, `planner::outline`):** the block's phase, this week's rows,
+today's proposal and why, each interval workout's power from last time, and the next four weeks
+as the planner would propose them if each row were rowed as proposed, three a week. A
+projection, not a schedule: it re-plans after every row, and a reference row's verdict, unknown
+ahead, counts as the middle ramp.
+
 ### 8.1 Consistency rules
 
 - Main rule: **no gap longer than 7 days**.

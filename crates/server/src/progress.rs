@@ -59,10 +59,6 @@ pub async fn get(State(api): State<Api>) -> Result<Json<Progress>, ApiError> {
     }
 
     // The same heart profile the CLI uses, for estimating logbook load.
-    let profile = store::sessions::get_profile(pool).await?;
-    let age = store::sessions::latest_age(pool).await?;
-    let recent = store::health::list_days(pool, today - 30).await?;
-    let watch_rest = analysis::readiness::zone_rest(&recent, today);
-    let heart = profile.heart(age, watch_rest).map(|h| h.0);
+    let heart = store::history::heart_profile(pool, today).await?;
     Ok(Json(progress(&rows, &halves, heart.as_ref(), today)))
 }

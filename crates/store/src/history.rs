@@ -3,6 +3,8 @@
 use analysis::planner::Row;
 use analysis::reference::{self, Piece};
 use analysis::technique::Fault;
+use analysis::workout::{Kind, Progression, four_by_four_hr_top, progression as next_power};
+use analysis::zones::HeartProfile;
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDateTime};
 use sqlx::SqlitePool;
@@ -135,6 +137,27 @@ pub async fn planner_rows(pool: &SqlitePool) -> Result<Vec<Row>> {
         });
     }
     Ok(rows)
+}
+
+/// The heart profile the CLI and the server both use: what's set, else
+/// the Watch's resting heart rate and an estimate from age.
+pub async fn heart_profile(pool: &SqlitePool, today: i64) -> Result<Option<HeartProfile>> {
+    let profile = crate::sessions::get_profile(pool).await?;
+    let age = crate::sessions::latest_age(pool).await?;
+    let recent = crate::health::list_days(pool, today - 30).await?;
+    let watch_rest = analysis::readiness::zone_rest(&recent, today);
+    Ok(profile.heart(age, watch_rest).map(|h| h.0))
+}
+
+/// The next `kind` interval workout's power, from the last real one with
+/// its work intervals.
+pub async fn progression(pool: &SqlitePool, kind: Kind, heart: Option<&HeartProfile>) -> Result<Option<Progression>> {
+    let sessions = crate::sessions::list_sessions(pool).await?;
+    let last = sessions
+        .iter()
+        .rev()
+        .find(|s| !s.meta.simulated && s.meta.plan.as_deref() == Some(kind.name()) && !s.summary.work.is_empty());
+    Ok(last.and_then(|s| next_power(kind, &s.summary.work, heart.map(four_by_four_hr_top))))
 }
 
 /// Faults rarer than this in recent sessions aren't worth a session's focus.

@@ -3,9 +3,11 @@
 //! coach follows the PM5 from work to rest and back (`stage`), so its calls
 //! match the monitor even after a warm-up in the same row.
 
+use model::{Event, EventKind};
 use serde::{Deserialize, Serialize};
 
 use crate::cues::Targets;
+use crate::session::WorkInterval;
 use crate::zones::HeartProfile;
 
 /// The workouts there are: the planner proposes one, the rower may pick
@@ -43,6 +45,11 @@ pub const RATE_STEPS: [f64; 4] = [20.0, 22.0, 24.0, 22.0];
 pub const FOUR_BY_FOUR_RATE: (f64, f64) = (24.0, 28.0);
 /// The 4×4's ceiling, as a share of max heart rate (not of the reserve).
 pub const FOUR_BY_FOUR_HR_TOP: f64 = 0.95;
+
+/// The 4×4's heart-rate ceiling for this rower, bpm.
+pub fn four_by_four_hr_top(heart: &HeartProfile) -> f64 {
+    (heart.max * FOUR_BY_FOUR_HR_TOP).round()
+}
 
 impl Kind {
     pub const ALL: [Self; 7] = [
@@ -187,7 +194,7 @@ impl Kind {
                         Targets {
                             rate: Some(FOUR_BY_FOUR_RATE),
                             watts: None,
-                            hr_max: heart.map(|h| (h.max * FOUR_BY_FOUR_HR_TOP).round()),
+                            hr_max: heart.map(four_by_four_hr_top),
                         };
                         i.count as usize
                     ],
@@ -230,6 +237,15 @@ impl Workout {
         }
     }
 
+    /// Power for each work interval (none for a piece): a band around each.
+    pub fn set_power(&mut self, watts: &[f64]) {
+        if let Self::Intervals { work, .. } = self {
+            for (t, &w) in work.iter_mut().zip(watts) {
+                t.watts = Some(((w * (1.0 - POWER_BAND)).round(), (w * (1.0 + POWER_BAND)).round()));
+            }
+        }
+    }
+
     /// Every set of targets in it, to override from the command line.
     pub fn targets_mut(&mut self) -> Vec<&mut Targets> {
         match self {
@@ -237,6 +253,97 @@ impl Workout {
             Self::Intervals { work, .. } => work.iter_mut().collect(),
         }
     }
+}
+
+/// A work interval's power band: this much either side of its target.
+pub const POWER_BAND: f64 = 0.04;
+/// Held all the way: the next one goes up this much.
+pub const STEP_UP: f64 = 0.03;
+/// The last work interval within this much of the first: no fade.
+pub const FADE: f64 = 0.03;
+
+/// The next interval workout's power, from how the last one of the same
+/// kind went.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Progression {
+    /// For each work interval, in order.
+    pub watts: Vec<f64>,
+    /// Why, in a line: what last time did and what that makes this time.
+    pub note: String,
+}
+
+/// Each work interval's power for next time: what the last one held, and
+/// 3% more when it was held all the way. For the 4×4, held means every
+/// interval done, the last within 3% of the first, and heart rate never over
+/// the ceiling (`hr_top`): the same power for all four. For rate steps it
+/// means every step done at its rate, and each step keeps its own power.
+/// `None` with nothing complete to go on: the first one is by heart rate
+/// (the 4×4) or by rate alone (rate steps).
+pub fn progression(kind: Kind, last: &[WorkInterval], hr_top: Option<f64>) -> Option<Progression> {
+    let i = kind.intervals()?;
+    let watts: Vec<f64> = last.iter().filter_map(|w| w.seg.watts).collect();
+    if last.len() < i.count as usize || watts.len() < i.count as usize {
+        return None;
+    }
+    let watts = &watts[..i.count as usize];
+    let (first, end) = (watts[0], watts[watts.len() - 1]);
+    let w = |x: f64| format!("{x:.0} W");
+    match kind {
+        Kind::FourByFour => {
+            let mean = watts.iter().sum::<f64>() / watts.len() as f64;
+            let peak = last.iter().filter_map(|w| w.hr_peak).max_by(f64::total_cmp);
+            let (next, why) = if end < first * (1.0 - FADE) {
+                (mean, format!("faded from {} to {}", w(first), w(end)))
+            } else if let (Some(top), Some(p)) = (hr_top, peak)
+                && p > top
+            {
+                (mean, format!("heart rate reached {p:.0}, over {top:.0}"))
+            } else {
+                (mean * (1.0 + STEP_UP), "held all four".to_string())
+            };
+            let next = next.round();
+            Some(Progression {
+                watts: vec![next; i.count as usize],
+                note: format!("Last 4×4: {} average, {why}: {} this time.", w(mean), w(next)),
+            })
+        }
+        Kind::RateSteps => {
+            let on_rate = last.iter().zip(RATE_STEPS).all(|(l, r)| l.seg.spm.is_some_and(|s| (s - r).abs() <= 1.0));
+            let k = if on_rate { 1.0 + STEP_UP } else { 1.0 };
+            let next: Vec<f64> = watts.iter().map(|x| (x * k).round()).collect();
+            let list = |v: &[f64]| v.iter().map(|x| format!("{x:.0}")).collect::<Vec<_>>().join(" / ");
+            let why = if on_rate { "every step at its rate" } else { "not every step at its rate" };
+            Some(Progression {
+                note: format!("Last rate steps: {} W, {why}: {} W this time.", list(watts), list(&next)),
+                watts: next,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// When each work interval ran, from the PM5's workout state in a
+/// recording's events: from the first poll in work to the first one out of
+/// it (or the recording's end).
+pub fn work_windows(events: &[Event]) -> Vec<(i64, i64)> {
+    let mut windows = Vec::new();
+    let mut open: Option<i64> = None;
+    for ev in events {
+        let EventKind::Pm5Status(s) = &ev.kind else { continue };
+        let Some(code) = s.workout_state else { continue };
+        match (stage(code) == Some(Stage::Work), open) {
+            (true, None) => open = Some(ev.t_us),
+            (false, Some(from)) => {
+                windows.push((from, ev.t_us));
+                open = None;
+            }
+            _ => {}
+        }
+    }
+    if let (Some(from), Some(last)) = (open, events.last()) {
+        windows.push((from, last.t_us));
+    }
+    windows
 }
 
 /// Where an interval workout set on the PM5 is.
@@ -317,6 +424,73 @@ mod tests {
         let mut four = Kind::FourByFour.workout(None);
         four.set_minutes(40.0);
         assert_eq!(four, Kind::FourByFour.workout(None), "intervals keep their length");
+    }
+
+    fn done(watts: &[f64], spm: f64, hr_peak: f64) -> Vec<WorkInterval> {
+        watts
+            .iter()
+            .map(|&w| WorkInterval {
+                seg: crate::session::Segment {
+                    watts: Some(w),
+                    spm: Some(spm),
+                    ..Default::default()
+                },
+                hr_peak: Some(hr_peak),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_four_by_four_held_all_the_way_goes_up_3_percent() {
+        let p = progression(Kind::FourByFour, &done(&[110.0, 108.0, 109.0, 109.0], 26.0, 170.0), Some(174.0)).unwrap();
+        assert_eq!(p.watts, vec![112.0; 4]);
+        assert_eq!(p.note, "Last 4×4: 109 W average, held all four: 112 W this time.");
+    }
+
+    #[test]
+    fn a_four_by_four_that_faded_or_went_over_repeats() {
+        let faded = progression(Kind::FourByFour, &done(&[120.0, 112.0, 105.0, 100.0], 26.0, 170.0), Some(174.0)).unwrap();
+        assert_eq!(faded.watts, vec![109.0; 4]);
+        assert!(faded.note.contains("faded from 120 W to 100 W"), "{}", faded.note);
+        let over = progression(Kind::FourByFour, &done(&[110.0; 4], 26.0, 178.0), Some(174.0)).unwrap();
+        assert_eq!(over.watts, vec![110.0; 4]);
+        assert!(over.note.contains("over 174"));
+        assert_eq!(progression(Kind::FourByFour, &done(&[110.0; 3], 26.0, 160.0), Some(174.0)), None, "stopped after three");
+        assert_eq!(progression(Kind::Steady, &done(&[110.0; 4], 26.0, 160.0), None), None);
+    }
+
+    #[test]
+    fn rate_steps_keep_each_step_s_power_and_go_up_when_on_rate() {
+        let mut last = done(&[80.0, 88.0, 95.0, 90.0], 0.0, 150.0);
+        for (l, r) in last.iter_mut().zip(RATE_STEPS) {
+            l.seg.spm = Some(r + 0.4);
+        }
+        let p = progression(Kind::RateSteps, &last, None).unwrap();
+        assert_eq!(p.watts, vec![82.0, 91.0, 98.0, 93.0]);
+        last[2].seg.spm = Some(26.5);
+        assert_eq!(progression(Kind::RateSteps, &last, None).unwrap().watts, vec![80.0, 88.0, 95.0, 90.0]);
+    }
+
+    #[test]
+    fn the_power_targets_go_into_the_work_intervals() {
+        let mut w = Kind::FourByFour.workout(None);
+        w.set_power(&[110.0; 4]);
+        let Workout::Intervals { work, .. } = w else { panic!() };
+        assert!(work.iter().all(|t| t.watts == Some((106.0, 114.0))));
+    }
+
+    #[test]
+    fn work_windows_follow_the_pm5() {
+        let poll = |sec: i64, code: u8| Event {
+            t_us: sec * 1_000_000,
+            kind: EventKind::Pm5Status(model::Pm5Status {
+                workout_state: Some(code),
+                ..Default::default()
+            }),
+        };
+        let events = [poll(0, 0), poll(1, 4), poll(240, 4), poll(241, 3), poll(420, 6), poll(421, 4), poll(700, 4)];
+        assert_eq!(work_windows(&events), vec![(1_000_000, 241_000_000), (420_000_000, 700_000_000)]);
+        assert!(work_windows(&[poll(0, 1), poll(5, 1)]).is_empty(), "a single piece has none");
     }
 
     #[test]

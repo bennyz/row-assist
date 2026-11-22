@@ -1,6 +1,6 @@
 <script>
   import { getSession } from './api.js';
-  import { clock, dateLabel, faultList, fixed, grouped, pace, timeLabel } from './format.js';
+  import { PLANS, clock, dateLabel, faultList, fixed, grouped, pace, timeLabel } from './format.js';
   import FaultRates from './FaultRates.svelte';
   import Feel from './Feel.svelte';
   import Figures from './Figures.svelte';
@@ -76,7 +76,7 @@
     <header>
       <h1>{dateLabel(detail.started_at_us)} <span class="muted">{timeLabel(detail.started_at_us)}</span></h1>
       <div class="tags">
-        {#if detail.plan}<span class="tag">{detail.plan}</span>{/if}
+        {#if detail.plan}<span class="tag">{PLANS[detail.plan] ?? detail.plan}</span>{/if}
         {#if detail.simulated}<span class="tag">simulated</span>{/if}
         {#if detail.note}<span class="note">{detail.note}</span>{/if}
       </div>
@@ -110,6 +110,29 @@
           <span class="muted">{r.note}</span>
         {/if}
       </p>
+    {/if}
+
+    {#if s.work?.length}
+      <section>
+        <h2>Work intervals</h2>
+        <table class="work">
+          <thead>
+            <tr><th></th><th>time</th><th>watts</th><th>rate</th><th>HR avg</th><th>HR peak</th></tr>
+          </thead>
+          <tbody>
+            {#each s.work as w, i (i)}
+              <tr>
+                <td>{i + 1}</td>
+                <td class="num">{clock(w.seconds)}</td>
+                <td class="num">{fixed(w.watts)}</td>
+                <td class="num">{fixed(w.spm, 1)}</td>
+                <td class="num">{fixed(w.hr)}</td>
+                <td class="num">{fixed(w.hr_peak)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </section>
     {/if}
 
     {#if s.heart?.zone_s?.length}
@@ -186,6 +209,26 @@
 {/if}
 
 <style>
+  .work {
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  .work th {
+    font-weight: 500;
+    color: var(--ink-3);
+    text-align: right;
+    padding: 0 0 0.4rem 1.5rem;
+  }
+  .work td {
+    text-align: right;
+    padding: 0.25rem 0 0.25rem 1.5rem;
+    border-top: 1px solid var(--rule);
+  }
+  .work td:first-child,
+  .work th:first-child {
+    padding-left: 0;
+    color: var(--ink-3);
+  }
   article {
     transition: opacity 0.15s;
   }

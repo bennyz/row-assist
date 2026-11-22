@@ -88,6 +88,21 @@ pub fn segment<'a>(strokes: impl IntoIterator<Item = &'a StrokeRecord>) -> Segme
     seg
 }
 
+/// Each work interval's strokes (by their catch) summed up; `windows` from
+/// `workout::work_windows`.
+pub fn work_intervals(strokes: &[StrokeRecord], windows: &[(i64, i64)]) -> Vec<WorkInterval> {
+    windows
+        .iter()
+        .map(|&(from, to)| {
+            let inside: Vec<&StrokeRecord> = strokes.iter().filter(|s| (from..to).contains(&s.t_catch_us)).collect();
+            WorkInterval {
+                seg: segment(inside.iter().copied()),
+                hr_peak: inside.iter().filter_map(|s| s.hr_bpm).max_by(f64::total_cmp),
+            }
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Summary {
@@ -125,6 +140,19 @@ pub struct Summary {
     pub camera: Option<CameraView>,
     /// How often each fault showed up (camera faults only with the camera).
     pub faults: Vec<FaultRate>,
+    /// An interval workout's work intervals as the PM5 timed them, in order;
+    /// empty for a single piece.
+    pub work: Vec<WorkInterval>,
+}
+
+/// One work interval of an interval workout.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkInterval {
+    #[serde(flatten)]
+    pub seg: Segment,
+    /// The highest stroke heart rate in it: where the interval ended up.
+    pub hr_peak: Option<f64>,
 }
 
 /// `None` when there are no strokes.
@@ -200,6 +228,8 @@ pub fn summarize(strokes: &[StrokeRecord], hearts: &[(i64, u16)], profile: Optio
         profile: profile.copied(),
         camera: None,
         faults: fault_rates(strokes),
+        // Filled by `analyze`, which has the PM5's workout states.
+        work: Vec::new(),
     })
 }
 

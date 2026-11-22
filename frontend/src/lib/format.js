@@ -11,6 +11,16 @@ export const KINDS = {
   minimum: 'Minimum session',
 };
 
+/** A recording's plan, by the name its header keeps. */
+export const PLANS = {
+  reference: 'Reference row',
+  easy: 'Easy row',
+  steady: 'Steady row',
+  rate_steps: 'Rate steps',
+  four_by_four: 'Norwegian 4×4',
+  rate20: 'Rate-20 test',
+};
+
 /** Readiness levels: a mark and a word, never colour alone. */
 export const READINESS = {
   green: { mark: '✓', label: 'Ready', tone: 'ok', advice: 'Row as planned.' },

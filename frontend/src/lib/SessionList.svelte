@@ -1,5 +1,5 @@
 <script>
-  import { dateLabel, fixed, timeLabel } from './format.js';
+  import { PLANS, dateLabel, fixed, timeLabel } from './format.js';
 
   let { sessions, current, onselect } = $props();
 </script>
@@ -23,7 +23,7 @@
             {fixed(s.minutes)} min · {fixed(s.watts)} W · EF {fixed(s.ef, 3)}
           </span>
           {#if s.plan || s.simulated}
-            <span class="tags">{[s.plan, s.simulated && 'sim'].filter(Boolean).join(' · ')}</span>
+            <span class="tags">{[s.plan && (PLANS[s.plan] ?? s.plan), s.simulated && 'sim'].filter(Boolean).join(' · ')}</span>
           {/if}
         </a>
       </li>

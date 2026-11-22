@@ -36,6 +36,7 @@ pub fn analyze(events: &[Event], profile: Option<&zones::HeartProfile>) -> Analy
     let mut summary = session::summarize(&strokes, &hearts, profile);
     if let Some(s) = &mut summary {
         s.camera = camera;
+        s.work = session::work_intervals(&strokes, &workout::work_windows(events));
     }
     Analysis {
         summary,

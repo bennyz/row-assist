@@ -6,6 +6,7 @@
   import MirrorPage from './lib/MirrorPage.svelte';
   import Readiness from './lib/Readiness.svelte';
   import ProgressPage from './lib/ProgressPage.svelte';
+  import PlanPage from './lib/PlanPage.svelte';
   import Today from './lib/Today.svelte';
   import PhonePage from './lib/PhonePage.svelte';
 
@@ -18,6 +19,7 @@
   // The row screen, in front of the erg, gets the whole window: it's home.
   const onRow = $derived(path === '/' || path.startsWith('/mirror'));
   const onProgress = $derived(path.startsWith('/progress'));
+  const onPlan = $derived(path.startsWith('/plan'));
   // A phone gets its own full-window pages: setup, then the camera.
   const onPhoneCamera = $derived(path.startsWith('/phone/camera'));
   const onPhone = $derived(path.startsWith('/phone'));
@@ -108,6 +110,15 @@
     >
     <a
       class="nav"
+      class:here={onPlan}
+      href="/plan"
+      onclick={(e) => {
+        e.preventDefault();
+        go('/plan');
+      }}>Plan</a
+    >
+    <a
+      class="nav"
       class:here={onProgress}
       href="/progress"
       onclick={(e) => {
@@ -125,7 +136,7 @@
       }}>Camera setup</a
     >
     {#if sessions.length}
-      <SessionList {sessions} current={onCamera || onProgress ? null : current} onselect={select} />
+      <SessionList {sessions} current={onCamera || onProgress || onPlan ? null : current} onselect={select} />
     {/if}
   </aside>
   <main>
@@ -133,6 +144,8 @@
       <CameraPage />
     {:else if onProgress}
       <ProgressPage />
+    {:else if onPlan}
+      <PlanPage />
     {:else if error}
       <p class="error">Couldn't reach the server: {error}</p>
     {:else if current != null}

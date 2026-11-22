@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use analysis::cues::{FocusCoach, Pacer, Targets};
-use analysis::workout::{Kind, Workout};
+use analysis::workout::{Kind, Progression, Workout};
 use analysis::strokes::{StrokeAssembler, StrokeRecord};
 use analysis::technique::{Fault, LiveTechnique};
 use analysis::zones::HeartProfile;
@@ -131,8 +131,10 @@ impl LiveArgs {
     }
 
     fn setup(&self, focus: Option<Fault>) -> Setup {
+        // Its power from last time comes from the database, in `record`.
         Setup {
             kind: self.plan.map(Plan::kind),
+            progression: None,
             rate: self.rate,
             watts: self.watts,
             zone: self.zone,
@@ -243,10 +245,12 @@ pub fn sim_intervals(i: analysis::workout::Intervals) -> sim::SimIntervals {
 }
 
 /// What one row is set up as: a workout, its length where the plan (or a
-/// flag) sets it, flags' targets over the workout's, and the technique focus.
+/// flag) sets it, its power from last time, flags' targets over the
+/// workout's, and the technique focus.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Setup {
     pub kind: Option<Kind>,
+    pub progression: Option<Progression>,
     pub rate: Option<(f64, f64)>,
     pub watts: Option<(f64, f64)>,
     pub zone: Option<u8>,
@@ -266,6 +270,9 @@ impl Setup {
         };
         if let Some(m) = self.minutes {
             w.set_minutes(m);
+        }
+        if let Some(p) = &self.progression {
+            w.set_power(&p.watts);
         }
         let zone_top = self.zone.map(|z| heart.and_then(|h| h.zone_bpm(z)).map(|(_, top)| top));
         for t in w.targets_mut() {
@@ -337,6 +344,9 @@ impl Coach {
             if let Some(pm5) = k.pm5_setup() {
                 println!("Set on the PM5: {pm5}");
             }
+        }
+        if let Some(p) = &setup.progression {
+            println!("{}", p.note);
         }
         let (workout, zone_ok) = setup.workout(heart.as_ref());
         if !zone_ok {
@@ -558,7 +568,14 @@ pub async fn record(args: LiveArgs, out: Option<PathBuf>, note: Option<String>) 
     let focus = choose_focus(&args, ctx.as_ref()).await;
     header.focus = focus.map(|f| f.label().to_owned());
     let writer = FileWriter::create(&path, &header)?;
-    let coach = Coach::new(&args.setup(focus), ctx.as_ref(), args.speak.then(start_speaker).flatten());
+    let mut setup = args.setup(focus);
+    if let (Some(c), Some(k)) = (&ctx, setup.kind) {
+        setup.progression = c.progression(k).await.unwrap_or_else(|e| {
+            eprintln!("Couldn't read the last {}: {e:#}", k.label());
+            None
+        });
+    }
+    let coach = Coach::new(&setup, ctx.as_ref(), args.speak.then(start_speaker).flatten());
     println!("Recording to {} (Ctrl-C to stop)", path.display());
 
     let pool = ctx.as_ref().map(|c| c.pool.clone());

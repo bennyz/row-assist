@@ -32,6 +32,7 @@ pub mod camera;
 pub mod health;
 pub mod live;
 pub mod phone;
+pub mod plan;
 pub mod progress;
 pub mod row;
 pub mod tls;
@@ -114,6 +115,7 @@ pub fn router(api: Option<Api>, web_dir: &Path, live: Live) -> Router {
                 .route("/api/health", get(health::get))
                 .route("/api/progress", get(progress::get))
                 .route("/api/today", get(today::get))
+                .route("/api/plan", get(plan::get))
                 .route("/api/row", get(row::get))
                 .route("/api/row/stop", axum::routing::post(row::stop))
                 .route("/api/row/mark", axum::routing::post(row::mark))
