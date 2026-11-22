@@ -7,6 +7,9 @@
 
   const MILESTONE_W = 100;
   const WEEK_TARGET = 3;
+  // A week's aims besides the rowing (the server's ACTIVE_MIN_TARGET, STRENGTH_TARGET).
+  const ACTIVE_AIM = 150;
+  const STRENGTH_AIM = 2;
 
   let p = $state(null);
   let error = $state(null);
@@ -39,6 +42,10 @@
       : [],
   );
 
+  // The Watch's charts start where its data does.
+  const wx0 = $derived(Math.min(...[...(p?.watch.vo2max ?? []), ...(p?.watch.resting_hr ?? [])].map((q) => q.day), x1) - 3);
+  const vo2 = $derived(p ? [{ key: 'vo2', label: 'VO₂max', color: css('--ink'), kind: 'both', points: p.watch.vo2max }] : []);
+  const rest = $derived(p ? [{ key: 'rest', label: 'Resting HR', color: css('--ink-2'), kind: 'both', points: p.watch.resting_hr }] : []);
   const now = $derived(p?.load.at(-1));
   const thisWeek = $derived(p?.weeks.at(-1));
   const lastW20 = $derived(p?.watts_at_20.at(-1));
@@ -102,6 +109,38 @@
     <p class="note muted">{day(p.weeks[0].start_day)} to now · hover a week for its rows and minutes</p>
   </section>
 
+  <section>
+    <h2>Heart and lungs <span class="muted">· the Watch's VO₂max estimate, from outdoor walks and runs</span></h2>
+    {#if p.watch.vo2max.length}
+      <DayChart series={vo2} x0={wx0} x1={x1} unit="ml/kg/min" digits={1} />
+    {:else}
+      <p class="muted">No VO₂max from the Watch yet: add it to the Shortcut, and take an outdoor walk with the Watch.</p>
+    {/if}
+    {#if p.watch.resting_hr.length}
+      <h3>Resting heart rate <span class="muted">· lower as fitness grows</span></h3>
+      <DayChart series={rest} x0={wx0} x1={x1} unit="bpm" height={110} />
+    {/if}
+  </section>
+
+  {#if p.watch.weeks.length}
+    <section>
+      <h2>Each week besides the rowing <span class="muted">· aim {ACTIVE_AIM} active minutes and {STRENGTH_AIM} strength sessions</span></h2>
+      <table class="movement">
+        <thead><tr><th>Week of</th><th>Active minutes</th><th>Strength</th><th>Steps a day</th></tr></thead>
+        <tbody>
+          {#each p.watch.weeks.slice(-8).reverse() as w (w.start_day)}
+            <tr>
+              <td>{day(w.start_day)}</td>
+              <td class:met={w.active_min >= ACTIVE_AIM}>{Math.round(w.active_min)}</td>
+              <td class:met={w.strength_days >= STRENGTH_AIM}>{w.strength_days}</td>
+              <td>{w.steps_per_day == null ? '–' : Math.round(w.steps_per_day).toLocaleString()}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </section>
+  {/if}
+
   {#if faultSeries.length}
     <section>
       <h2>Faults <span class="muted">· share of strokes, camera sessions</span></h2>
@@ -152,6 +191,30 @@
 {/if}
 
 <style>
+  table.movement {
+    border-collapse: collapse;
+    font-size: 14px;
+  }
+  table.movement th {
+    font-weight: 500;
+    color: var(--ink-3);
+    text-align: right;
+    padding: 0 0 0.4rem 1.75rem;
+  }
+  table.movement td {
+    text-align: right;
+    padding: 0.3rem 0 0.3rem 1.75rem;
+    border-top: 1px solid var(--rule);
+    font-family: var(--font-num);
+  }
+  table.movement th:first-child,
+  table.movement td:first-child {
+    text-align: left;
+    padding-left: 0;
+  }
+  table.movement .met {
+    color: var(--ok);
+  }
   h1 {
     font-size: 20px;
     font-weight: 600;

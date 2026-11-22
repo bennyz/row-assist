@@ -79,6 +79,20 @@ pub const EASY_WEEK_GAP_DAYS: i64 = 7;
 /// Past this many days without a row, say so.
 pub const NUDGE_DAYS: i64 = 4;
 pub const ROWS_PER_WEEK: u32 = 3;
+/// Weeks in a row at `ROWS_PER_WEEK` before a fourth row a week is planned:
+/// the habit first, then the volume.
+pub const STEADY_WEEKS_FOR_MORE: i64 = 4;
+
+/// Rows to plan this week: `ROWS_PER_WEEK`, or one more once each of the
+/// `STEADY_WEEKS_FOR_MORE` weeks before this one had them all.
+pub fn week_target(rows: &[&Row], today: i64) -> u32 {
+    let had = |k: i64| rows.iter().filter(|r| r.day > today - 7 * (k + 1) && r.day <= today - 7 * k).count() as u32;
+    if (1..=STEADY_WEEKS_FOR_MORE).all(|k| had(k) >= ROWS_PER_WEEK) {
+        ROWS_PER_WEEK + 1
+    } else {
+        ROWS_PER_WEEK
+    }
+}
 /// Build weeks before the first rate-20 test.
 pub const TEST_AFTER_WEEKS: u32 = 3;
 
@@ -110,6 +124,7 @@ pub fn propose(rows: &[Row], today: i64, readiness: Level, focus: Option<Fault>)
     }
     let block: Vec<&Row> = rows.iter().copied().filter(|r| r.day >= block_start).collect();
     let rows_this_week = rows.iter().filter(|r| r.day > today - 7).count() as u32;
+    let target_per_week = week_target(&rows, today);
 
     match gap {
         None => why.push("no rows yet".into()),
@@ -142,6 +157,16 @@ pub fn propose(rows: &[Row], today: i64, readiness: Level, focus: Option<Fault>)
         (Kind::Reference, (20, 20), Phase::Restart)
     };
 
+    // The reference row measures fitness: not on top of a hard row's fatigue.
+    let hard_lately = rows
+        .iter()
+        .any(|r| r.day >= today - 1 && r.plan.as_deref().and_then(Kind::from_name).is_some_and(Kind::is_hard));
+    if kind == Kind::Reference && hard_lately {
+        why.push("a hard row today or yesterday: an easy row, and the reference row on a fresh day".into());
+        kind = Kind::Easy;
+        minutes = Kind::Easy.minutes();
+    }
+
     let mut phase = phase;
     if let (Some(g), Phase::Build { .. }) = (restarted_after, phase) {
         why.push(format!("back after {g} days: an easy week before intensity"));
@@ -166,7 +191,10 @@ pub fn propose(rows: &[Row], today: i64, readiness: Level, focus: Option<Fault>)
         }
         _ => {}
     }
-    if rows_this_week >= ROWS_PER_WEEK && kind != Kind::Reference {
+    if target_per_week > ROWS_PER_WEEK && rows_this_week == ROWS_PER_WEEK {
+        why.push(format!("{STEADY_WEEKS_FOR_MORE} weeks at {ROWS_PER_WEEK} rows: a fourth this week"));
+    }
+    if rows_this_week >= target_per_week && kind != Kind::Reference {
         why.push(format!("{rows_this_week} rows in the last 7 days already: this one is optional"));
     }
 
@@ -176,7 +204,7 @@ pub fn propose(rows: &[Row], today: i64, readiness: Level, focus: Option<Fault>)
         phase,
         focus,
         rows_this_week,
-        target_per_week: ROWS_PER_WEEK,
+        target_per_week,
         why,
     }
 }
@@ -224,16 +252,12 @@ fn build(block: &[&Row], today: i64, week: u32, why: &mut Vec<String>) -> (Kind,
         why.push(format!("build week {week}"));
     }
     let steadies = this_week.iter().filter(|r| matches!(r.plan.as_deref(), Some("steady" | "easy") | None)).count();
+    // The week's hard row is the 4×4, for heart and lungs (the rower's aim:
+    // healthy and in very good shape, 2026-11-22). Rate steps, picked on the
+    // row screen, count as the week's hard row too.
     if !lighter && !this_week.iter().any(|r| hard(r).is_some()) && steadies >= 1 {
-        // Rate steps build power per stroke at a set rate, the 4×4 the
-        // engine: each in turn, rate steps first.
-        let last = block.iter().rev().find_map(hard);
-        let kind = if last == Some(Kind::RateSteps) { Kind::FourByFour } else { Kind::RateSteps };
-        why.push(match last {
-            Some(k) => format!("one hard row a week once the steady rows are in; {} last time", k.label()),
-            None => "one hard row a week once the steady rows are in".into(),
-        });
-        return (kind, kind.minutes(), phase);
+        why.push("one hard row a week once the steady rows are in: the 4×4, for heart and lungs".into());
+        return (Kind::FourByFour, Kind::FourByFour.minutes(), phase);
     }
     (Kind::Steady, steady, phase)
 }
@@ -287,7 +311,7 @@ mod tests {
         // after the reference row); a steady row this week → rate steps.
         let rows = [reference(TODAY - 10, Ramp::OneWeek), row(TODAY - 9, Some("easy")), row(TODAY - 2, Some("steady"))];
         let p = propose(&rows, TODAY, Level::Green, None);
-        assert_eq!((p.kind, p.phase), (Kind::RateSteps, Phase::Build { week: 1 }));
+        assert_eq!((p.kind, p.phase), (Kind::FourByFour, Phase::Build { week: 1 }));
         // Rate steps done this week → steady.
         let mut done = rows.to_vec();
         done.push(row(TODAY - 1, Some("rate_steps")));
@@ -295,27 +319,55 @@ mod tests {
     }
 
     #[test]
-    fn hard_rows_take_turns() {
-        // Build week 2: rate steps last week, a steady row this week → the 4×4.
+    fn the_weekly_hard_row_is_the_4x4() {
+        // Build week 2: a 4×4 last week, a steady row this week → the 4×4 again.
         let rows = [
             reference(TODAY - 17, Ramp::OneWeek),
             row(TODAY - 9, Some("steady")),
-            row(TODAY - 8, Some("rate_steps")),
+            row(TODAY - 8, Some("four_by_four")),
             row(TODAY - 2, Some("steady")),
         ];
         let p = propose(&rows, TODAY, Level::Green, None);
         assert_eq!((p.kind, p.minutes), (Kind::FourByFour, Kind::FourByFour.minutes()));
-        assert!(p.why.iter().any(|w| w.contains("rate steps last time")), "{:?}", p.why);
-        // The 4×4 done this week counts as the week's hard row.
-        let mut done = rows.to_vec();
-        done.push(row(TODAY - 1, Some("four_by_four")));
-        assert_eq!(propose(&done, TODAY, Level::Green, None).kind, Kind::Steady);
-        // And next week (the benchmark done) it's rate steps again.
-        let mut later = done.clone();
-        later.extend([row(TODAY + 3, Some("rate20")), row(TODAY + 5, Some("steady"))]);
-        assert_eq!(propose(&later, TODAY + 7, Level::Green, None).kind, Kind::RateSteps);
+        assert!(p.why.iter().any(|w| w.contains("heart and lungs")), "{:?}", p.why);
+        // Done this week (or rate steps picked instead): a steady row.
+        for hard in ["four_by_four", "rate_steps"] {
+            let mut done = rows.to_vec();
+            done.push(row(TODAY - 1, Some(hard)));
+            assert_eq!(propose(&done, TODAY, Level::Green, None).kind, Kind::Steady, "{hard}");
+        }
         // Amber readiness swaps it for a steady row.
         assert_eq!(propose(&rows, TODAY, Level::Amber, None).kind, Kind::Steady);
+    }
+
+    #[test]
+    fn four_weeks_at_three_rows_earn_a_fourth() {
+        let mut rows = vec![reference(TODAY - 60, Ramp::OneWeek)];
+        // Three rows in each of the four weeks before this one, and three this week.
+        for k in 0..5 {
+            for d in [1, 3, 5] {
+                rows.push(row(TODAY - 7 * k - d, Some("steady")));
+            }
+        }
+        rows.retain(|r| r.day < TODAY);
+        let p = propose(&rows, TODAY, Level::Green, None);
+        assert_eq!(p.target_per_week, ROWS_PER_WEEK + 1);
+        assert!(!p.why.iter().any(|w| w.contains("optional")), "the fourth isn't optional: {:?}", p.why);
+        assert!(p.why.iter().any(|w| w.contains("a fourth this week")), "{:?}", p.why);
+        // A thin week among them, and it's three again.
+        rows.retain(|r| r.day != TODAY - 7 * 3 - 3);
+        assert_eq!(propose(&rows, TODAY, Level::Green, None).target_per_week, ROWS_PER_WEEK);
+    }
+
+    #[test]
+    fn the_reference_row_waits_for_a_fresh_day() {
+        // Back after a long gap with a 4×4 today, before any reference row.
+        let rows = [row(TODAY - 200, None), Row { minutes: 21.0, ..row(TODAY, Some("four_by_four")) }];
+        let today = propose(&rows, TODAY, Level::Green, None);
+        assert_eq!(today.kind, Kind::Easy);
+        assert!(today.why.iter().any(|w| w.contains("fresh day")), "{:?}", today.why);
+        assert_eq!(propose(&rows, TODAY + 1, Level::Green, None).kind, Kind::Easy, "nor the day after");
+        assert_eq!(propose(&rows, TODAY + 2, Level::Green, None).kind, Kind::Reference);
     }
 
     #[test]
@@ -338,7 +390,7 @@ mod tests {
         // Two easy weeks (the middle ramp), then build weeks.
         assert!(ahead.iter().filter(|(d, _)| (TODAY + 1..TODAY + 14).contains(d)).all(|(_, p)| p.kind == Kind::Easy));
         let hard: Vec<Kind> = kinds.iter().copied().filter(|k| matches!(k, Kind::RateSteps | Kind::FourByFour)).collect();
-        assert_eq!(&hard[..2], [Kind::RateSteps, Kind::FourByFour], "hard rows take turns");
+        assert!(hard.len() >= 2 && hard.iter().all(|&k| k == Kind::FourByFour), "a 4×4 every build week: {hard:?}");
         assert!(kinds.contains(&Kind::Rate20Test), "the benchmark within six weeks");
         assert!(ahead.windows(2).all(|w| w[1].0 > w[0].0));
     }

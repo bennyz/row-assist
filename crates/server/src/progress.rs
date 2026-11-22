@@ -1,9 +1,10 @@
 //! `/api/progress`: the long view, from every row in both sources.
 
-use analysis::progress::{Progress, ProgressRow, fault_halves, progress};
+use analysis::progress::{Progress, ProgressRow, Watch, fault_halves, progress, watch};
 use axum::Json;
 use axum::extract::State;
-use store::health::day_number;
+use serde::Serialize;
+use store::health::{day_number, list_days};
 use store::history::{Entry, entries};
 
 use crate::{Api, ApiError};
@@ -42,7 +43,16 @@ fn row(e: &Entry) -> ProgressRow {
     }
 }
 
-pub async fn get(State(api): State<Api>) -> Result<Json<Progress>, ApiError> {
+/// The rowing's long view, and the Watch's: its VO2max estimate, resting
+/// heart rate and each week's movement.
+#[derive(Debug, Serialize)]
+pub struct WithWatch {
+    #[serde(flatten)]
+    pub progress: Progress,
+    pub watch: Watch,
+}
+
+pub async fn get(State(api): State<Api>) -> Result<Json<WithWatch>, ApiError> {
     let pool = &api.pool;
     let today = day_number(chrono::Local::now().date_naive());
     let all = entries(pool, None).await?;
@@ -60,5 +70,8 @@ pub async fn get(State(api): State<Api>) -> Result<Json<Progress>, ApiError> {
 
     // The same heart profile the CLI uses, for estimating logbook load.
     let heart = store::history::heart_profile(pool, today).await?;
-    Ok(Json(progress(&rows, &halves, heart.as_ref(), today)))
+    Ok(Json(WithWatch {
+        progress: progress(&rows, &halves, heart.as_ref(), today),
+        watch: watch(&list_days(pool, 0).await?),
+    }))
 }

@@ -31,6 +31,7 @@
       : [],
   );
   const now = $derived(p?.ahead[0]);
+  const moved = $derived(p && (p.movement.active_min > 0 || p.movement.strength_days > 0 || p.movement.steps_per_day != null));
   const ready = $derived(READINESS[p?.readiness.level] ?? READINESS.unknown);
 </script>
 
@@ -52,6 +53,16 @@
       </ul>
     {:else}
       <p class="muted">None yet.</p>
+    {/if}
+    {#if moved}
+      <p class="movement">
+        <span class:met={p.movement.strength_days >= p.strength_target}>Strength {p.movement.strength_days} of {p.strength_target}</span>
+        · <span class:met={p.movement.active_min >= p.active_min_target}>active {Math.round(p.movement.active_min)} of {p.active_min_target} min</span>
+        {#if p.movement.steps_per_day != null}· {Math.round(p.movement.steps_per_day).toLocaleString()} steps a day{/if}
+        <span class="muted">· from the Watch</span>
+      </p>
+    {:else}
+      <p class="muted movement">No strength or activity from the Watch yet: add them to the Shortcut.</p>
     {/if}
   </section>
 
@@ -151,6 +162,12 @@
   }
   .bad {
     color: var(--bad);
+  }
+  .movement {
+    margin: 0.75rem 0 0;
+  }
+  .movement .met {
+    color: var(--ok);
   }
   .power {
     margin: 0 0 0.4rem;

@@ -11,13 +11,22 @@
 
 use serde::{Deserialize, Serialize};
 
-/// One day of recovery data. `day` counts days since 1970-01-01, local.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+/// One day of Watch data. `day` counts days since 1970-01-01, local.
+/// Readiness reads the recovery (HRV, resting heart rate, sleep); the long
+/// view also reads the day's movement and the watch's VO2max estimate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct HealthDay {
     pub day: i64,
     pub hrv_ms: Option<f64>,
     pub resting_hr: Option<f64>,
     pub sleep_h: Option<f64>,
+    /// The watch's VO2max estimate (Cardio Fitness), ml/kg/min.
+    pub vo2max: Option<f64>,
+    /// Minutes of strength-training workouts.
+    pub strength_min: Option<f64>,
+    pub steps: Option<f64>,
+    /// Apple Exercise Time.
+    pub exercise_min: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -191,6 +200,7 @@ mod tests {
                     hrv_ms: Some(55.0 + 2.0 * wobble),
                     resting_hr: Some(55.0 + wobble / 5.0),
                     sleep_h: Some(7.5),
+                    ..Default::default()
                 }
             })
             .collect()

@@ -501,14 +501,25 @@ and a second Shortcut was a second thing to stop running unnoticed.
 
 ---
 
+**Movement and fitness from the Watch (built):** the same fetch brings the day's steps, Apple
+Exercise Time, strength-training workouts (minutes, summed by day; a day with 10 or more counts as
+a session) and the watch's VO2max estimate (Cardio Fitness, from outdoor walks and runs), stored
+on the same day's row (`health_daily`, migration 0005). nutridag collects them from the phone's
+Shortcut like the rest (`vo2max` and `strength_minutes` added there 2026-11-22). The Plan page
+shows the last 7 days against a week's aims; the Progress page charts VO2max and resting heart
+rate and lists each week's active minutes, strength sessions and steps (`progress::watch`).
+
 ## 8. Planner (the improvement loop)
 
 **Built (`analysis::planner`, `rowctl plan`):** the rules below, over every row so far (logbook
 and app sessions, uploads of the same row counted once) and today's readiness. A gap over 21
 days starts a block with a reference row; its verdict sets the comeback ramp (1/2/3 weeks of
-easy rows); then build weeks: one hard row a week after a steady row (rate steps and the
-Norwegian 4×4 in turn, rate steps first), otherwise steady rows, a lighter fourth week, the
-rate-20 test after 3 build weeks (once per block). A gap of 8–21 days turns intensity into an
+easy rows); then build weeks: one hard row a week after a steady row (the Norwegian 4×4, for
+heart and lungs, since the rower's aim became "healthy and in very good shape", 2026-11-22; rate
+steps picked on the row screen count as the week's hard row), otherwise steady rows, a lighter
+fourth week, the rate-20 test after 3 build weeks (once per block). Three rows a week, and a fourth
+once each of the 4 weeks before had three (the habit first, then the volume). The reference row
+waits for a fresh day: on the day of a hard row and the day after, an easy row instead. A gap of 8–21 days turns intensity into an
 easy week. Amber → no intensity; red → minimum session.
 `rowctl plan` prints the session, the reasons, and the exact `rowctl record --plan …` command;
 the workouts (`analysis::workout::Kind`) record their name (`reference`, `easy`, `steady`,
@@ -564,9 +575,12 @@ Fitness after a long gap is unknown, so the ramp measures it:
 ### 8.3 Weekly template after the ramp
 
 - 2 × steady: zone 2, 30–45 min, rate 18–20, technique focus.
-- 1 × rate/intensity work: e.g. 4 × 5 min stepping rate 20/22/24 at matched form, later 6 × 500 m,
-  in turn with the Norwegian 4×4 (4 hard intervals at 85–95% of max HR, rate 20–26, 3 min easy
-  between, building from 2 to 4 min each).
+- 1 × intensity: the Norwegian 4×4 (4 hard intervals at 85–95% of max HR, rate 20–26, 3 min easy
+  between, building from 2 to 4 min each); rate steps (4 × 5 min stepping rate 20/22/24 at matched
+  form) by choice on the row screen.
+- Besides the rowing, a week's aims for health (WHO's adult guideline): 150 active minutes
+  (Apple Exercise Time) and 2 strength sessions, from the Watch (§7); shown on the Plan page and
+  week by week on the Progress page.
   Intensity only goes up once fault rates hold at that rate.
 - 1 × optional technique session: drills plus a rate ladder.
 - Volume +≤10%/week; lighter week every 4th week. Amber readiness → no intensity; red → minimum session.

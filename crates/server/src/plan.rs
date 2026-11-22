@@ -2,6 +2,7 @@
 //! proposed, and the interval workouts' power from last time.
 
 use analysis::planner::{MIN_ROW_MINUTES, Proposal, outline};
+use analysis::progress::{ACTIVE_MIN_TARGET, Movement, STRENGTH_TARGET, movement};
 use analysis::readiness::{HRV_BASELINE_DAYS, Readiness, WEEK, readiness};
 use analysis::workout::Kind;
 use axum::Json;
@@ -22,6 +23,10 @@ pub struct PlanView {
     /// Rows of 10 minutes or more in the last 7 days.
     pub done: Vec<Done>,
     pub target_per_week: u32,
+    /// The last 7 days' movement from the Watch, against a week's aims.
+    pub movement: Movement,
+    pub active_min_target: f64,
+    pub strength_target: u32,
     /// Today's proposal first, then the ones after it.
     pub ahead: Vec<Ahead>,
     /// Each interval workout's power for next time, and why.
@@ -74,15 +79,19 @@ pub async fn get(State(api): State<Api>) -> Result<Json<PlanView>, ApiError> {
         })
         .collect();
     done.sort_by_key(|d| d.day);
-    let ahead = outline(&rows, today, ready.level, focus, WEEKS_AHEAD)
+    let ahead: Vec<Ahead> = outline(&rows, today, ready.level, focus, WEEKS_AHEAD)
         .into_iter()
         .map(|(day, proposal)| Ahead { day, proposal })
         .collect();
+    let week = health.iter().filter(|d| d.day > today - WEEK && d.day <= today);
     Ok(Json(PlanView {
         today,
         readiness: ready,
         done,
-        target_per_week: analysis::planner::ROWS_PER_WEEK,
+        target_per_week: ahead.first().map_or(analysis::planner::ROWS_PER_WEEK, |a| a.proposal.target_per_week),
+        movement: movement(week),
+        active_min_target: ACTIVE_MIN_TARGET,
+        strength_target: STRENGTH_TARGET,
         ahead,
         power,
     }))

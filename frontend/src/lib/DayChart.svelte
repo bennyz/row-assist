@@ -103,7 +103,7 @@
         <path class="line" d={linePath(s.points.map((p) => [x(p.day), y(p.value)]))} style:stroke={s.color} />
       {/if}
       {#if s.kind !== 'line'}
-        {#each s.points as p (p.day)}
+        {#each s.points as p, i (`${p.day}:${i}`)}
           <circle class="dot" cx={x(p.day)} cy={y(p.value)} r="4" style:fill={s.color} style:opacity={p.faint ? 0.55 : 1} />
         {/each}
       {/if}

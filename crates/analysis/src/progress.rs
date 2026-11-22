@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::readiness::HealthDay;
 use crate::strokes::StrokeRecord;
 use crate::technique::{Fault, FaultRate};
 use crate::zones::HeartProfile;
@@ -272,6 +273,105 @@ pub fn progress(rows: &[ProgressRow], halves: &[Vec<(Fault, f64, f64)>], profile
         faults,
         benchmarks,
         fatigue,
+    }
+}
+
+/// A week's aim besides the rowing, for health and fitness (WHO's adult
+/// guideline): 150 minutes of exercise, and strength training twice.
+pub const ACTIVE_MIN_TARGET: f64 = 150.0;
+pub const STRENGTH_TARGET: u32 = 2;
+/// A day with at least this many minutes of strength workouts is a session.
+pub const STRENGTH_SESSION_MIN: f64 = 10.0;
+
+/// The movement in some days of Watch data: Apple Exercise Time (rowing,
+/// strength and the rest), the days with a strength session, and the steps
+/// of an average day that has them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct Movement {
+    pub active_min: f64,
+    pub strength_days: u32,
+    pub steps_per_day: Option<f64>,
+}
+
+pub fn movement<'a>(days: impl IntoIterator<Item = &'a HealthDay>) -> Movement {
+    let mut m = Movement::default();
+    let (mut steps, mut stepped) = (0.0, 0u32);
+    for d in days {
+        m.active_min += d.exercise_min.unwrap_or(0.0);
+        m.strength_days += u32::from(d.strength_min.is_some_and(|s| s >= STRENGTH_SESSION_MIN));
+        if let Some(s) = d.steps {
+            steps += s;
+            stepped += 1;
+        }
+    }
+    m.steps_per_day = (stepped > 0).then_some(steps / f64::from(stepped));
+    m
+}
+
+/// The Watch's side of the long view: its VO2max estimate, resting heart
+/// rate, and each week's movement (Monday to Sunday).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Watch {
+    pub vo2max: Vec<Point>,
+    pub resting_hr: Vec<Point>,
+    pub weeks: Vec<WatchWeek>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct WatchWeek {
+    /// Monday.
+    pub start_day: i64,
+    #[serde(flatten)]
+    pub movement: Movement,
+}
+
+pub fn watch(days: &[HealthDay]) -> Watch {
+    let point = |day: i64, value: f64| Point {
+        day,
+        value,
+        context: 0.0,
+        from_logbook: false,
+    };
+    let mut weeks: Vec<WatchWeek> = Vec::new();
+    for start in days.iter().map(|d| week_start(d.day)).collect::<std::collections::BTreeSet<_>>() {
+        weeks.push(WatchWeek {
+            start_day: start,
+            movement: movement(days.iter().filter(|d| week_start(d.day) == start)),
+        });
+    }
+    Watch {
+        vo2max: days.iter().filter_map(|d| d.vo2max.map(|v| point(d.day, v))).collect(),
+        resting_hr: days.iter().filter_map(|d| d.resting_hr.map(|v| point(d.day, v))).collect(),
+        weeks,
+    }
+}
+
+#[cfg(test)]
+mod watch_tests {
+    use super::*;
+
+    #[test]
+    fn a_week_of_watch_data_adds_up_its_movement() {
+        let monday = week_start(20_400);
+        let day = |k: i64, f: fn(&mut HealthDay)| {
+            let mut d = HealthDay { day: monday + k, ..Default::default() };
+            f(&mut d);
+            d
+        };
+        let days = [
+            day(0, |d| { d.exercise_min = Some(40.0); d.steps = Some(6000.0); d.strength_min = Some(35.0); d.vo2max = Some(38.2); d.resting_hr = Some(74.0) }),
+            day(2, |d| { d.exercise_min = Some(30.0); d.steps = Some(9000.0); d.strength_min = Some(5.0) }),
+            day(4, |d| { d.exercise_min = Some(50.0); d.strength_min = Some(25.0); d.resting_hr = Some(72.0) }),
+            day(7, |d| { d.exercise_min = Some(20.0); d.vo2max = Some(38.9) }),
+        ];
+        let w = watch(&days);
+        assert_eq!(w.weeks.len(), 2);
+        let first = w.weeks[0].movement;
+        assert_eq!((first.active_min, first.strength_days), (120.0, 2), "5 minutes isn't a session");
+        assert_eq!(first.steps_per_day, Some(7500.0), "the average of the days with steps");
+        assert_eq!(w.weeks[1].start_day, monday + 7);
+        assert_eq!(w.vo2max.iter().map(|p| p.value).collect::<Vec<_>>(), [38.2, 38.9]);
+        assert_eq!(w.resting_hr.len(), 2);
     }
 }
 
