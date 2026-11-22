@@ -120,8 +120,8 @@ fn sequence_lines(name: &str, q: &Sequence, note: &str) -> String {
 
 /// Each stroke's order by the camera: where in the handle's travel (left to
 /// right, drive then recovery) the legs, the body and the arms moved.
-/// The typical stroke where the good stroke hands over from one part to the
-/// next, beside the good stroke, with the strokes' median order and the good
+/// The typical stroke every 2.5% of the way through the drive and the
+/// recovery, beside the good stroke, with the strokes' median order and the good
 /// stroke's: what a picture of "what I did next to what I should" needs.
 pub fn filmstrip(file: &Path, work: bool) -> Result<()> {
     use analysis::ideal::Phase;
@@ -137,11 +137,11 @@ pub fn filmstrip(file: &Path, work: bool) -> Result<()> {
     if windows.is_empty() {
         bail!("no rowing to look at in this recording");
     }
-    // Where the good stroke hands over from one part to the next.
-    let positions: Vec<(Phase, f64)> = [0.0, 0.3, 0.6, 1.0]
-        .map(|u| (Phase::Drive, u))
+    // Every 2.5% of the handle's travel: enough to animate, and it has the
+    // good stroke's hand-offs (0.2, 0.3, 0.35, 0.6, 0.65) for a still picture.
+    let positions: Vec<(Phase, f64)> = [Phase::Drive, Phase::Recovery]
         .into_iter()
-        .chain([0.2, 0.35, 0.65, 1.0].map(|u| (Phase::Recovery, u)))
+        .flat_map(|p| (0..=40).map(move |k| (p, k as f64 / 40.0)))
         .collect();
     let stills = analysis::technique::filmstrip(&events, &windows, &positions);
     let strokes: Vec<_> = a
