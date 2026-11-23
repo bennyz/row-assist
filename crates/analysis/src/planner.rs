@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::readiness::Level;
 use crate::reference::Ramp;
+use crate::session::Summary;
 use crate::technique::Fault;
 use crate::workout::Kind;
 
@@ -104,7 +105,49 @@ fn weeks_for(ramp: Option<Ramp>) -> u32 {
     }
 }
 
-/// `rows` in any order; `focus` is the technique point chosen elsewhere.
+/// Faults rarer than this in recent sessions aren't worth a session's focus.
+pub const FOCUS_MIN_RATE: f64 = 0.10;
+/// Rows, of the recent ones, that must show a fault's clear loss of work
+/// before the work leads the choice.
+pub const FOCUS_COST_ROWS: usize = 2;
+
+/// The technique focus, from recent sessions, among the faults shown on at
+/// least 10% of their strokes (camera faults only with the camera): the one
+/// that went with the most lost work, once at least 2 of the rows show a
+/// clear loss for it (`Summary::fault_costs`); until then, the most
+/// frequent. With its mean rate.
+pub fn focus(recent: &[&Summary], camera: bool) -> Option<(Fault, f64)> {
+    let rate = |f: Fault| {
+        let rates: Vec<f64> = recent
+            .iter()
+            .filter_map(|s| s.faults.iter().find(|r| r.fault == f && r.of > 0))
+            .map(|r| r.hits as f64 / r.of as f64)
+            .collect();
+        (!rates.is_empty()).then(|| rates.iter().sum::<f64>() / rates.len() as f64)
+    };
+    let loss = |f: Fault| {
+        let losses: Vec<f64> = recent
+            .iter()
+            .filter_map(|s| s.fault_costs.iter().find(|c| c.fault == f && c.clear && c.work_pct < 0.0))
+            .map(|c| -c.work_pct)
+            .collect();
+        (losses.len() >= FOCUS_COST_ROWS).then(|| losses.iter().sum::<f64>() / losses.len() as f64)
+    };
+    let shown: Vec<(Fault, f64)> = Fault::ALL
+        .into_iter()
+        .filter(|f| camera || !f.needs_camera())
+        .filter_map(|f| rate(f).map(|r| (f, r)))
+        .filter(|&(_, r)| r >= FOCUS_MIN_RATE)
+        .collect();
+    let costliest = shown
+        .iter()
+        .filter_map(|&(f, r)| loss(f).map(|l| ((f, r), l)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(focus, _)| focus);
+    costliest.or_else(|| shown.into_iter().max_by(|a, b| a.1.total_cmp(&b.1)))
+}
+
+/// `rows` in any order; `focus` is the technique point, from [`focus`].
 pub fn propose(rows: &[Row], today: i64, readiness: Level, focus: Option<Fault>) -> Proposal {
     let mut rows: Vec<&Row> = rows.iter().filter(|r| r.minutes >= MIN_ROW_MINUTES && r.day <= today).collect();
     rows.sort_by_key(|r| r.day);
@@ -265,8 +308,52 @@ fn build(block: &[&Row], today: i64, week: u32, why: &mut Vec<String>) -> (Kind,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cost::FaultCost;
+    use crate::technique::FaultRate;
 
     const TODAY: i64 = 20_400;
+
+    /// A session's summary with these fault rates (of 100 strokes) and work
+    /// differences (`(fault, percent, clear)`).
+    fn summary(rates: &[(Fault, u32)], costs: &[(Fault, f64, bool)]) -> Summary {
+        Summary {
+            faults: rates.iter().map(|&(fault, hits)| FaultRate { fault, hits, of: 100 }).collect(),
+            fault_costs: costs
+                .iter()
+                .map(|&(fault, work_pct, clear)| FaultCost {
+                    fault,
+                    strokes: 30,
+                    worst: 0.0,
+                    best: 0.0,
+                    work_pct,
+                    watts: 100.0,
+                    clear,
+                    worst_curve: Vec::new(),
+                    best_curve: Vec::new(),
+                })
+                .collect(),
+            ..Summary::default()
+        }
+    }
+
+    #[test]
+    fn the_focus_follows_lost_work_once_two_rows_agree() {
+        use Fault::{EarlyArms, EarlyBody, ShortCompression};
+        let rates = [(EarlyBody, 90), (EarlyArms, 60), (ShortCompression, 5)];
+        let costly = summary(&rates, &[(EarlyArms, -5.0, true), (EarlyBody, 4.0, true), (ShortCompression, -9.0, true)]);
+        let quiet = summary(&rates, &[(EarlyArms, -5.0, false)]);
+
+        // One row with a clear loss: still the most frequent.
+        let one = focus(&[&costly, &quiet, &quiet], true);
+        assert_eq!(one.map(|f| f.0), Some(EarlyBody));
+        // Two: the arms, though rarer. Never a fault hardly shown, whatever
+        // its cost, and a clear gain is no reason.
+        let two = focus(&[&costly, &costly, &quiet], true).unwrap();
+        assert_eq!(two.0, EarlyArms);
+        assert!((two.1 - 0.6).abs() < 1e-9, "its rate: {}", two.1);
+        // Without the camera, only the PM5's faults.
+        assert_eq!(focus(&[&costly, &costly], false), None);
+    }
 
     fn row(day: i64, plan: Option<&str>) -> Row {
         Row {

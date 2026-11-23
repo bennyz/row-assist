@@ -160,27 +160,19 @@ pub async fn progression(pool: &SqlitePool, kind: Kind, heart: Option<&HeartProf
     Ok(last.and_then(|s| next_power(kind, &s.summary.work, heart.map(four_by_four_hr_top), s.feel.effort)))
 }
 
-/// Faults rarer than this in recent sessions aren't worth a session's focus.
-pub const FOCUS_MIN_RATE: f64 = 0.10;
+/// Real sessions the focus is chosen from.
 pub const FOCUS_SESSIONS: usize = 3;
 
-/// The fault with the highest rate (≥ 10%) over the last 3 real sessions;
-/// camera faults only if this session has the camera.
+/// The focus over the last 3 real sessions (`planner::focus`); camera
+/// faults only if this session has the camera.
 pub async fn auto_focus(pool: &SqlitePool, camera: bool) -> Result<Option<(Fault, f64)>> {
     let sessions = crate::sessions::list_sessions(pool).await?;
-    let recent: Vec<_> = sessions.iter().rev().filter(|s| !s.meta.simulated).take(FOCUS_SESSIONS).collect();
-    let rate = |f: Fault| {
-        let rates: Vec<f64> = recent
-            .iter()
-            .filter_map(|s| s.summary.faults.iter().find(|r| r.fault == f && r.of > 0))
-            .map(|r| r.hits as f64 / r.of as f64)
-            .collect();
-        (!rates.is_empty()).then(|| rates.iter().sum::<f64>() / rates.len() as f64)
-    };
-    Ok(Fault::ALL
-        .into_iter()
-        .filter(|f| camera || !f.needs_camera())
-        .filter_map(|f| rate(f).map(|r| (f, r)))
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-        .filter(|&(_, r)| r >= FOCUS_MIN_RATE))
+    let recent: Vec<_> = sessions
+        .iter()
+        .rev()
+        .filter(|s| !s.meta.simulated)
+        .take(FOCUS_SESSIONS)
+        .map(|s| &s.summary)
+        .collect();
+    Ok(analysis::planner::focus(&recent, camera))
 }

@@ -292,8 +292,11 @@ It is what goes together, not proof of cause.
 
 ### 5.2 Coach behaviour
 
-- **One focus per session**, picked by the planner from the most frequent fault in recent sessions.
-  Other faults are recorded but not spoken.
+- **One focus per session**, picked by the planner (`planner::focus`) over the last 3 real sessions,
+  among the faults shown on at least 10% of their strokes: the one that went with the most lost
+  work (§5.1, what a fault goes with in work) once at least 2 of those rows show a clear loss for
+  it; until then, the most frequent. A fault the rower hardly shows isn't chosen whatever its
+  cost, since the coach only speaks when it appears. Other faults are recorded but not spoken.
 - Speak when the focus fault appears in **≥ 6 of the last 10 strokes**; then wait **≥ 30 s**.
 - Positive cue when the rate drops below 2/10 for 20 strokes ("That's it.").
 - Cues are ≤ 4 words. Spoken by the OS speech command for now (`spd-say` or `espeak-ng`); browser
