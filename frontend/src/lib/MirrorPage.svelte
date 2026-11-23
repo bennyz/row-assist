@@ -38,6 +38,11 @@
   const EXTENT_EVERY = 30;
   // Longer than this since the last catch: not rowing, no place in the rhythm.
   const IDLE_S = 8;
+  // Your drive time is taken over this many strokes; the ghost's stays within
+  // DRIVE_S seconds and never takes more of the stroke than MAX_DRIVE_SHARE.
+  const OWN_DRIVES = 5;
+  const DRIVE_S = [0.8, 1.4];
+  const MAX_DRIVE_SHARE = 0.45;
   // Recovery this much shorter than the ghost's: "slow the slide".
   const RUSHED_S = 0.25;
 
@@ -65,6 +70,8 @@
   let extent = $state(null);
   let now = $state(performance.now());
   let catchAt = $state(null);
+  // Your last few drive times, s, by the camera.
+  let drives = $state([]);
   const recent = [];
   let seen = 0;
   const strokeClock = new StrokeClock();
@@ -104,14 +111,19 @@
         if (recent.length > EXTENT_FRAMES) recent.shift();
         seen += 1;
         if (!extent || seen % EXTENT_EVERY === 0) extent = reach(recent) ?? extent;
+        const before = strokeClock.catchAt;
         strokeClock.push(performance.now(), m.joints[WRIST]?.[0]);
-        catchAt = strokeClock.catchAt;
+        // The ghost starts its drive when the catch is seen, not when it was:
+        // a turn is only certain a moment later, and jumping ahead to where
+        // the ghost should be by then reads as a lurch.
+        if (strokeClock.catchAt !== before) catchAt = performance.now();
       } else if (m.type === 'target') {
         target = m;
       } else if (m.type === 'targets') {
         targets = m;
       } else if (m.type === 'stroke') {
         last = m;
+        if (m.drive_s != null) drives = [...drives.slice(1 - OWN_DRIVES), m.drive_s];
       } else if (m.type === 'focus') {
         focus = m;
       } else if (m.type === 'framing') {
@@ -175,8 +187,18 @@
   // the seat slides.
   const me = $derived(joints?.some(Boolean) ? joints : null);
 
-  // The rhythm to row at: the session's rate, else your own.
-  const rhythm = $derived(targets?.rhythm ?? (last?.rate ? rhythmAt(last.rate) : null));
+  // The rhythm to row at: the session's rate, else your own, with the drive
+  // at your own pace (the camera's, over your last strokes). The ghost is
+  // there for where the time goes, drive against slide; a drive quicker than
+  // yours only made it look rushed.
+  const rhythm = $derived.by(() => {
+    const at = targets?.rhythm ?? (last?.rate ? rhythmAt(last.rate) : null);
+    if (!at || !drives.length) return at;
+    const cycle = 60 / at.rate;
+    const own = drives.toSorted((a, b) => a - b)[drives.length >> 1];
+    const drive_s = Math.min(cycle * MAX_DRIVE_SHARE, Math.max(DRIVE_S[0], Math.min(DRIVE_S[1], own)));
+    return { ...at, drive_s, recovery_s: cycle - drive_s };
+  });
   // Seconds since your last catch, while rowing: your place in the rhythm.
   const since = $derived(catchAt == null ? null : (now - catchAt) / 1000);
   const rowing = $derived(since != null && since < IDLE_S);
@@ -195,8 +217,10 @@
     const r = since - rhythm.drive_s;
     return r < rhythm.recovery_s ? along(path.recovery, recoveryEase(r / rhythm.recovery_s)) : atCatch;
   });
-  // The handle through the drive: speeding up, then easing into the finish.
-  const driveEase = (x) => x * x * (3 - 2 * x);
+  // The handle through the drive: off the catch at once (the legs), easing
+  // into the finish. Half even, half smoothstep: smoothstep alone sat at the
+  // catch, then raced through the middle.
+  const driveEase = (x) => 0.5 * x + 0.5 * x * x * (3 - 2 * x);
   // Through the recovery: hands away and body over quickly, then a slow slide.
   const recoveryEase = (x) => 1 - (1 - x) ** 1.6;
   /** The figure `u` of the way along a path of figures, between its steps. */
@@ -265,7 +289,7 @@
   const faults = $derived(last?.faults ?? []);
 </script>
 
-<div class="mirror" class:wide={mode === 'mirror' && row?.phase === 'rowing' && !showLast && !(setup && !setup.ok) && !note}>
+<div class="mirror" class:wide={mode === 'mirror' && row?.phase === 'rowing' && !showLast && !note}>
   <header>
     {#if row}<RowBar {row} position={targets?.position} onstop={stopRow} />{/if}
     <div class="top">
@@ -332,7 +356,9 @@
     </div>
 
     <aside>
-      {#if setup && !setup.ok}
+      <!-- For setting the camera up: mid-row nothing can be done about it, and a
+           check that fails for part of each stroke would flip the layout. -->
+      {#if setup && !setup.ok && row?.phase !== 'rowing'}
         <section class="setup" aria-live="polite">
           <h2>Camera setup</h2>
           <ul>

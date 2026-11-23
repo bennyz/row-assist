@@ -15,7 +15,9 @@ export function rhythmAt(rate) {
 /**
  * Catches and finishes from the live wrist path: the handle turns round at
  * each. A turn counts once the wrist is `turn` thigh lengths back from its
- * furthest point, and is dated to that point.
+ * furthest point, and is dated to that point. That is about 0.25 s into the
+ * drive, when the handle is still slow; a smaller turn is seen hardly sooner
+ * (0.15: 0.2 s) and mistakes jitter for turns.
  */
 export class StrokeClock {
   constructor(turn = 0.25) {

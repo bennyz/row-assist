@@ -355,15 +355,20 @@ The front screen shows the rower's own position, drawn from landmarks (no video 
 deliberately sparse (the rower found the step labels, part bars, rhythm bar and every-fault list
 confusing): the live figure, the **pace ghost**, three numbers, the coach's words and the day's one
 focus. The last stroke's order and frozen catch and finish show in rests and between rows; the
-review page has the rest.
+review page has the rest. The camera's framing check shows only before the row: mid-row it can't
+be acted on, and a check failing for part of every stroke flipped the layout each stroke.
 - **Live figure** drawn from where the feet rest (the median ankle, `LiveTechnique::figure`),
   so it holds still while the seat slides; framed to the rower's own range of movement.
 - **Pace ghost**: the good stroke on the rower's body (`Target::path`, every 2.5% of the
   handle's travel through each phase) rowed at the rhythm to row at, from each of the rower's
   catches on the live figure's own clock (`StrokeClock`, so it shares the camera's delay): the
-  drive at the rhythm's drive time (handle speeding up then easing into the finish), the
-  recovery at its recovery time (hands away and body over quickly, then a slow slide); late, it
-  waits at the catch. Rowing with it, the rower overlaps it; where they differ is the order the
+  drive at the rower's own drive time (the camera's, median of the last 5 strokes, 0.8–1.4 s and
+  at most 45% of the stroke), off the catch at once and easing into the finish; the recovery in
+  the rest of the stroke at the coach's rate (hands away and body over quickly, then a slow
+  slide); late, it waits at the catch. It starts each drive when the catch is seen, about 0.25 s
+  after it (the wrist has to come back a quarter thigh first): dated back to the catch, it jumped
+  ahead each stroke and, with the rhythm's own 1 s drive against the rower's 1.2 s, looked
+  rushed (2026-11-23). What it shows is where the time goes, drive against slide. Rowing with it, the rower overlaps it; where they differ is the order the
   legs, body and arms move in (the faults of §5.4) or the timing, with one word under it ("On
   rhythm" / "Slow the slide"). Before Go it rows at the rower's own rate; it sits out rests. Always
   on, by the rower's choice (Fable, a second model advising, suggested doses after §5.3's guidance
