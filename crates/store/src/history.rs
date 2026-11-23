@@ -150,20 +150,16 @@ pub async fn heart_profile(pool: &SqlitePool, today: i64) -> Result<Option<Heart
 }
 
 /// The next `kind` workout's power: an interval workout's from the last
-/// real one with its work intervals; an easy or steady row's from how the
-/// last real one of either ended, against zone 2's top. `None` for the
-/// other kinds, or with no row to go on.
+/// real one with its work intervals; an easy or steady row's from the last
+/// real one of either long enough to measure its heart-rate drift. `None`
+/// for the other kinds, or with no row to go on.
 pub async fn progression(pool: &SqlitePool, kind: Kind, heart: Option<&HeartProfile>) -> Result<Option<Progression>> {
     let sessions = crate::sessions::list_sessions(pool).await?;
     let mut real = sessions.iter().rev().filter(|s| !s.meta.simulated);
     Ok(match kind {
-        Kind::Easy | Kind::Minimum | Kind::Steady => {
-            let Some(top) = heart.and_then(|h| h.zone_bpm(2)).map(|(_, top)| top) else {
-                return Ok(None);
-            };
-            real.filter(|s| matches!(s.meta.plan.as_deref().and_then(Kind::from_name), Some(Kind::Easy | Kind::Steady)))
-                .find_map(|s| easy_power(&s.summary, top))
-        }
+        Kind::Easy | Kind::Minimum | Kind::Steady => real
+            .filter(|s| matches!(s.meta.plan.as_deref().and_then(Kind::from_name), Some(Kind::Easy | Kind::Steady)))
+            .find_map(|s| easy_power(&s.summary)),
         _ => real
             .find(|s| s.meta.plan.as_deref() == Some(kind.name()) && !s.summary.work.is_empty())
             .and_then(|s| next_power(kind, &s.summary.work, heart.map(four_by_four_hr_top), s.feel.effort)),

@@ -40,6 +40,13 @@ pub fn analyze(events: &[Event], profile: Option<&zones::HeartProfile>) -> Analy
         let windows = workout::work_windows(events);
         s.work = session::work_intervals(&strokes, &windows);
         s.fault_costs = cost::fault_costs(&strokes, &windows);
+        // A piece's drift is the piece's own: a warm-up before Go, at
+        // another power, would read as drift.
+        if let Some((go, end)) = workout::piece_window(events) {
+            let piece = &strokes[strokes.partition_point(|r| r.t_catch_us < go)..strokes.partition_point(|r| r.t_catch_us < end)];
+            let d = session::drift(piece);
+            (s.first_half, s.second_half, s.decoupling_pct) = (d.first_half, d.second_half, d.pct);
+        }
     }
     Analysis {
         summary,

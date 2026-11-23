@@ -72,10 +72,9 @@ pub enum Cue {
     Rest,
     /// The next work interval is close.
     Soon,
-    /// The pace changed, for heart rate (`bpm`): lighter and a stroke slower
-    /// while it stays over the ceiling, a bit more once it's well under. The
-    /// new power and rate, each when it changed.
-    Pace { bpm: f64, watts: Option<f64>, rate: Option<f64>, slower: bool },
+    /// Heart rate (`bpm`) has stayed over the ceiling: a step lighter and a
+    /// stroke slower. The new power and rate, each when it changed.
+    Pace { bpm: f64, watts: Option<f64>, rate: Option<f64> },
     /// The pace is as light as it goes and heart rate is still over the
     /// ceiling: hold it there. Said once.
     Held { bpm: f64 },
@@ -107,17 +106,13 @@ impl Cue {
             }
             Self::Rest => "Rest. Paddle easy.".into(),
             Self::Soon => "Ten seconds.".into(),
-            Self::Pace { bpm, watts, rate, slower } => {
+            Self::Pace { bpm, watts, rate } => {
                 let to: Vec<String> = watts
                     .map(|w| format!("{w:.0} watts"))
                     .into_iter()
                     .chain(rate.map(|r| format!("rate {r:.0}")))
                     .collect();
-                let way = match (slower, watts.is_some()) {
-                    (true, true) => "Lighter",
-                    (true, false) => "Slower",
-                    (false, _) => "A bit more",
-                };
+                let way = if watts.is_some() { "Lighter" } else { "Slower" };
                 format!("Heart rate {bpm:.0}. {way}: {}.", to.join(", "))
             }
             Self::Held { bpm } => format!("Heart rate {bpm:.0}. Keep it this light."),
@@ -144,19 +139,12 @@ pub const WORK_SETTLE_S: f64 = 30.0;
 pub const SOON_S: f64 = 10.0;
 /// Heart rate over the ceiling this long: a step lighter.
 pub const PACE_OVER_S: f64 = 30.0;
-/// Heart rate this far under the ceiling for `PACE_UNDER_S`: a step more.
-pub const PACE_UNDER_BPM: f64 = 5.0;
-pub const PACE_UNDER_S: f64 = 60.0;
-/// At most one change of pace this often: heart rate follows the work a
-/// minute or so late, and quicker steps would chase it up and down.
+/// At most one step this often: heart rate follows the work a minute or so
+/// late, and quicker steps would overshoot it.
 pub const PACE_EVERY_S: f64 = 75.0;
-/// No step up this early in a part: heart rate is still climbing to where
-/// the pace will hold it, so being under says nothing yet.
-pub const PACE_UP_AFTER_S: f64 = 300.0;
-/// A step lighter takes this share of the power off (at least 5 W), a step
-/// more puts this share on (at least 5 W); both to the nearest 5 W.
+/// A step lighter takes this share of the power off (at least 5 W), to the
+/// nearest 5 W.
 pub const PACE_DOWN: f64 = 0.10;
-pub const PACE_UP: f64 = 0.05;
 /// The pace's power never goes under this: lighter is paddling, and the
 /// stroke loses its hold on the flywheel.
 pub const WATTS_FLOOR: f64 = 30.0;
@@ -164,42 +152,39 @@ pub const WATTS_FLOOR: f64 = 30.0;
 /// and never narrower than this either side.
 pub const PACE_BAND: f64 = 0.10;
 pub const PACE_BAND_MIN_W: f64 = 5.0;
+/// "Rate up" and "harder" only with heart rate at least this far under the
+/// ceiling: over it is the pace's to answer, and close to it there's no room.
+pub const ROOM_BPM: f64 = 5.0;
 
 /// A step lighter than `w` watts; `None` at the floor.
 pub fn lighter(w: f64) -> Option<f64> {
     (w > WATTS_FLOOR).then(|| (((w - (w * PACE_DOWN).max(5.0)) / 5.0).round() * 5.0).max(WATTS_FLOOR))
 }
 
-/// A step more than `w` watts.
-pub fn heavier(w: f64) -> f64 {
-    ((w + (w * PACE_UP).max(5.0)) / 5.0).round() * 5.0
-}
-
 /// The pace of a part with a heart-rate ceiling (easy and steady rows, the
-/// 4×4's work): a power and a rate that step down while heart rate stays
-/// over the ceiling and back up once it's well under, so the ceiling holds
-/// without the rower guessing how much to ease off. The power starts at the
-/// part's own (an easy row's comes from how the last one ended), else the
-/// first step sets it from what the rower is pulling. The rate starts at
-/// the band's middle and stays inside the band, never above where it
-/// started: a quicker rate to push heart rate up is no rule of these
-/// workouts. Tests and fixed-rate work (no ceiling) keep their targets.
+/// 4×4's work). Its power is the part's own, held all the way (an easy
+/// row's is set from how far heart rate drifted on the last one,
+/// `workout::easy_power`), and the ceiling is a guardrail: heart rate over
+/// it for `PACE_OVER_S` takes a step lighter and a stroke slower, at most
+/// every `PACE_EVERY_S`, down to a floor. Without a power of its own the
+/// first step sets one from what the rower is pulling. It never steps back
+/// up within the row: one power held is what lets the row's drift say
+/// whether that power was aerobic. The rate stays inside its band. Tests
+/// and fixed-rate work (no ceiling) keep their targets.
 #[derive(Debug, Clone, Copy)]
 struct Pace {
     rate: Option<PaceRate>,
     watts: Option<f64>,
     over_since: Option<i64>,
-    under_since: Option<i64>,
     changed_us: Option<i64>,
     /// As light as it goes with heart rate still over: said once.
     held: bool,
 }
 
-/// The rate to row at, where it started and the lowest it goes.
+/// The rate to row at and the lowest it goes.
 #[derive(Debug, Clone, Copy)]
 struct PaceRate {
     now: f64,
-    start: f64,
     floor: f64,
 }
 
@@ -210,7 +195,6 @@ impl Pace {
             let start = ((lo + hi) / 2.0).round();
             PaceRate {
                 now: start,
-                start,
                 floor: lo.ceil().min(start),
             }
         });
@@ -218,62 +202,37 @@ impl Pace {
             rate,
             watts: t.watts.map(|(lo, hi)| (lo + hi) / 2.0),
             over_since: None,
-            under_since: None,
             changed_us: None,
             held: false,
         })
     }
 
     /// The median heart rate of the last strokes against the ceiling, with
-    /// the power the rower is pulling and how far into the part this is.
-    fn update(&mut self, hr: f64, max: f64, pulling: Option<f64>, into_part_s: f64, now: i64) -> Option<Cue> {
-        let held = |since: i64| (now - since) as f64 / 1e6;
-        let free = self.changed_us.is_none_or(|t| held(t) >= PACE_EVERY_S);
-        if hr > max {
-            self.under_since = None;
-            let over = *self.over_since.get_or_insert(now);
-            if held(over) < PACE_OVER_S || !free {
-                return None;
-            }
-            self.over_since = Some(now);
-            self.changed_us = Some(now);
-            let watts = self.watts.or(pulling).and_then(lighter);
-            let rate = self.rate.filter(|r| r.now > r.floor).map(|r| r.now - 1.0);
-            if watts.is_none() && rate.is_none() {
-                return (!std::mem::replace(&mut self.held, true)).then_some(Cue::Held { bpm: hr });
-            }
-            self.set(watts, rate);
-            Some(Cue::Pace { bpm: hr, watts, rate, slower: true })
-        } else if hr <= max - PACE_UNDER_BPM {
+    /// the power the rower is pulling.
+    fn update(&mut self, hr: f64, max: f64, pulling: Option<f64>, now: i64) -> Option<Cue> {
+        if hr <= max {
             self.over_since = None;
-            let under = *self.under_since.get_or_insert(now);
-            if held(under) < PACE_UNDER_S || !free || into_part_s < PACE_UP_AFTER_S {
-                return None;
-            }
-            let watts = self.watts.map(heavier);
-            let rate = self.rate.filter(|r| r.now < r.start).map(|r| r.now + 1.0);
-            if watts.is_none() && rate.is_none() {
-                return None;
-            }
-            self.under_since = Some(now);
-            self.changed_us = Some(now);
-            self.held = false;
-            self.set(watts, rate);
-            Some(Cue::Pace { bpm: hr, watts, rate, slower: false })
-        } else {
-            self.over_since = None;
-            self.under_since = None;
-            None
+            return None;
         }
-    }
-
-    fn set(&mut self, watts: Option<f64>, rate: Option<f64>) {
+        let held = |since: i64| (now - since) as f64 / 1e6;
+        let over = *self.over_since.get_or_insert(now);
+        if held(over) < PACE_OVER_S || self.changed_us.is_some_and(|t| held(t) < PACE_EVERY_S) {
+            return None;
+        }
+        self.over_since = Some(now);
+        self.changed_us = Some(now);
+        let watts = self.watts.or(pulling).and_then(lighter);
+        let rate = self.rate.filter(|r| r.now > r.floor).map(|r| r.now - 1.0);
+        if watts.is_none() && rate.is_none() {
+            return (!std::mem::replace(&mut self.held, true)).then_some(Cue::Held { bpm: hr });
+        }
         if watts.is_some() {
             self.watts = watts;
         }
         if let (Some(r), Some(p)) = (rate, self.rate.as_mut()) {
             p.now = r;
         }
+        Some(Cue::Pace { bpm: hr, watts, rate })
     }
 }
 /// Quiet time after any correction.
@@ -464,7 +423,7 @@ impl Pacer {
         let max = self.part_targets(now).and_then(|t| t.hr_max);
         let pulling = self.median(|r| r.watts);
         if let (Some(max), Some(hr)) = (max, self.median(|r| r.hr))
-            && let Some(cue) = self.pace.as_mut().and_then(|pace| pace.update(hr, max, pulling, into_part, now))
+            && let Some(cue) = self.pace.as_mut().and_then(|pace| pace.update(hr, max, pulling, now))
         {
             return Some(self.said(cue, now));
         }
@@ -490,10 +449,8 @@ impl Pacer {
     fn correction(&self, now_us: i64) -> Option<Cue> {
         let median = |pick: fn(&Recent) -> Option<f64>| self.median(pick);
         let t = self.targets(now_us)?;
-        // Quicker or harder only with heart rate well under its ceiling:
-        // over it is the pace's to answer, and close to it there's no room.
         let room = match (t.hr_max, median(|r| r.hr)) {
-            (Some(max), Some(hr)) => hr <= max - PACE_UNDER_BPM,
+            (Some(max), Some(hr)) => hr <= max - ROOM_BPM,
             _ => true,
         };
         if let (Some((lo, hi)), Some(rate)) = (t.rate, median(|r| r.rate)) {
@@ -713,7 +670,7 @@ mod tests {
         // speaks, lighter each time.
         let cues = fixes(run(piece(None, t.clone()), &steady(60, 3.5, 40.0, |_| 160.0)));
         assert!(!cues.is_empty());
-        assert!(cues.iter().all(|(_, c)| matches!(c, Cue::Pace { slower: true, .. })), "{cues:?}");
+        assert!(cues.iter().all(|(_, c)| matches!(c, Cue::Pace { .. })), "{cues:?}");
         // With heart rate fine, rate and power get their turn.
         let cues = fixes(run(piece(None, t.clone()), &steady(60, 3.5, 53.0, |_| 140.0)));
         assert!(matches!(cues[0].1, Cue::RateUp { target } if target == 20.0));
@@ -735,10 +692,10 @@ mod tests {
     #[test]
     fn texts() {
         assert_eq!(Cue::RateUp { target: 20.0 }.text(), "Rate up. 20.");
-        let pace = |watts, rate, slower| Cue::Pace { bpm: 162.4, watts, rate, slower }.text();
-        assert_eq!(pace(Some(55.0), Some(18.0), true), "Heart rate 162. Lighter: 55 watts, rate 18.");
-        assert_eq!(pace(None, Some(18.0), true), "Heart rate 162. Slower: rate 18.");
-        assert_eq!(pace(Some(35.0), None, false), "Heart rate 162. A bit more: 35 watts.");
+        let pace = |watts, rate| Cue::Pace { bpm: 162.4, watts, rate }.text();
+        assert_eq!(pace(Some(55.0), Some(18.0)), "Heart rate 162. Lighter: 55 watts, rate 18.");
+        assert_eq!(pace(Some(50.0), None), "Heart rate 162. Lighter: 50 watts.");
+        assert_eq!(pace(None, Some(18.0)), "Heart rate 162. Slower: rate 18.");
         assert_eq!(Cue::Held { bpm: 158.0 }.text(), "Heart rate 158. Keep it this light.");
         assert!(Targets::default().is_empty());
         let go = |n, rate, watts| Cue::Go { n, of: 4, rate, watts }.text();
@@ -816,7 +773,7 @@ mod tests {
         fn the_heart_ceiling_eases_a_bout_off() {
             let (_, cues) = row(hard(2), 26.0, 110.0, 180.0);
             let first = cues.iter().find(|(_, c)| matches!(c, Cue::Pace { .. })).map(|(_, c)| *c);
-            assert_eq!(first, Some(Cue::Pace { bpm: 180.0, watts: Some(100.0), rate: Some(25.0), slower: true }));
+            assert_eq!(first, Some(Cue::Pace { bpm: 180.0, watts: Some(100.0), rate: Some(25.0) }));
         }
     }
 
@@ -851,11 +808,11 @@ mod tests {
             (p, cues)
         }
 
-        /// Each change of pace: its power and rate, and which way.
-        fn steps(cues: &[(f64, Cue)]) -> Vec<(Option<f64>, Option<f64>, bool)> {
+        /// Each change of pace: its power and rate.
+        fn steps(cues: &[(f64, Cue)]) -> Vec<(Option<f64>, Option<f64>)> {
             cues.iter()
                 .filter_map(|(_, c)| match *c {
-                    Cue::Pace { watts, rate, slower, .. } => Some((watts, rate, slower)),
+                    Cue::Pace { watts, rate, .. } => Some((watts, rate)),
                     _ => None,
                 })
                 .collect()
@@ -866,7 +823,7 @@ mod tests {
             let (p, cues) = row(easy(), 14, |_| 160.0);
             let (at, first) = cues[0];
             // Rowed at 60 W with no power to aim for: the first step sets one.
-            assert_eq!(first, Cue::Pace { bpm: 160.0, watts: Some(55.0), rate: Some(18.0), slower: true });
+            assert_eq!(first, Cue::Pace { bpm: 160.0, watts: Some(55.0), rate: Some(18.0) });
             assert_eq!(first.text(), "Heart rate 160. Lighter: 55 watts, rate 18.");
             assert!(at >= SETTLE_S + PACE_OVER_S - 3.0, "not before it's been over a while: {at}");
             let watts: Vec<f64> = steps(&cues).iter().filter_map(|s| s.0).collect();
@@ -883,14 +840,14 @@ mod tests {
         }
 
         #[test]
-        fn and_comes_back_up_once_heart_rate_is_well_under_and_settled() {
-            let (p, cues) = row(easy(), 10, |t| if t < 180.0 { 160.0 } else { 145.0 });
-            let s = steps(&cues);
-            let down_up = [(Some(55.0), Some(18.0), true), (Some(50.0), None, true), (Some(55.0), Some(19.0), false)];
-            assert_eq!(s[..3], down_up, "{cues:?}");
-            assert!(cues[2].0 >= PACE_UP_AFTER_S - 3.0, "not while heart rate is still climbing: {cues:?}");
-            assert!(s[3..].iter().all(|&(w, r, slower)| w.is_some() && r.is_none() && !slower), "{s:?}");
-            assert_eq!(p.rhythm(T0 + 590 * S).map(|r| r.rate), Some(19.0), "never above where it started");
+        fn never_steps_back_up_within_a_row() {
+            let mut w = easy();
+            w.targets_mut()[0].watts = Some((36.0, 44.0));
+            // Over the ceiling for the first 3 minutes, well under after.
+            let (p, cues) = row(w, 12, |t| if t < 180.0 { 160.0 } else { 140.0 });
+            assert_eq!(steps(&cues), [(Some(35.0), Some(18.0)), (Some(30.0), None)], "only ever lighter: {cues:?}");
+            let t = p.targets(T0 + 700 * S).unwrap();
+            assert_eq!((t.watts, p.rhythm(T0 + 700 * S).map(|r| r.rate)), (Some((25.0, 35.0)), Some(18.0)));
         }
 
         #[test]
@@ -898,7 +855,7 @@ mod tests {
             let mut w = easy();
             w.targets_mut()[0].watts = Some((36.0, 44.0));
             let (_, cues) = row(w, 4, |_| 160.0);
-            assert_eq!(steps(&cues)[0], (Some(35.0), Some(18.0), true), "a step under 40 W, not under what was pulled");
+            assert_eq!(steps(&cues)[0], (Some(35.0), Some(18.0)), "a step under 40 W, not under what was pulled");
         }
 
         #[test]
@@ -907,7 +864,7 @@ mod tests {
             p.start(T0);
             // Rate 16, under the band, all the way to the floor and past it.
             let cues: Vec<Cue> = steady(300, 3.75, 25.0, |_| 165.0).iter().filter_map(|s| p.stroke(s)).collect();
-            assert!(cues.iter().all(|c| matches!(c, Cue::Pace { slower: true, .. } | Cue::Held { .. })), "{cues:?}");
+            assert!(cues.iter().all(|c| matches!(c, Cue::Pace { .. } | Cue::Held { .. })), "{cues:?}");
         }
 
         #[test]

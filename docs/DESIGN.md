@@ -316,10 +316,10 @@ row at and isn't repeated, while a displaced focus cue comes again within 30 s.
 **Pacing cues (Phase 1, built):** `rowctl record --plan reference --speak` (or `--rate`, `--watts`,
 `--zone`, `--minutes`) speaks short corrections through the OS speech command (`spd-say` or `espeak-ng`).
 Judged on the median of the last 6 strokes; silent for the first 60 s; ≥ 30 s between cues and
-≥ 60 s before the same cue repeats; rate before power. Heart rate is the pace's to answer (§5.3,
-"The pace is the coach's"), and "rate up" or "harder" come only with heart rate at least 5 bpm
-under the ceiling: over it, or close, there's no room (an easy row on 2026-11-23 heard "Rate up"
-and "Ease off" in the same minute). Halfway and time calls always get through.
+≥ 60 s before the same cue repeats; rate before power. Heart rate over the ceiling is the
+pace's to answer (§5.3, "The pace is the coach's"), and "rate up" or "harder" come only with
+heart rate at least 5 bpm under it: over it, or close, there's no room (an easy row on 2026-11-23
+heard "Rate up" and "Ease off" in the same minute). Halfway and time calls always get through.
 
 **Starting a workout (built):** every workout starts from the row screen's Start (the button, or
 Space/Enter): Go 10 s later ("Starting in ten seconds." … "Go."). Rowing before Start is the
@@ -384,22 +384,28 @@ be acted on, and a check failing for part of every stroke flipped the layout eac
   the legend ("On rhythm" / "Slow the slide"). It rows only in work parts with a rhythm: not
   before Go, not in rests. Always on, by the rower's choice (Fable, a second model advising,
   suggested doses after §5.3's guidance hypothesis; the rower preferred it always there).
-- **The pace is the coach's** (`cues::Pacer`): fixed for the tests and rate steps. For a part
-  with a heart-rate ceiling (easy and steady rows, the 4×4's work) a power and a rate that step
-  down when heart rate has stayed over the ceiling 30 s, at most every 75 s: 10% less power (at
-  least 5 W, to the nearest 5 W, never under 30 W) and a stroke slower, never under the rate band
-  ("Heart rate 160. Lighter: 55 watts, rate 18."). Back up a step (5% more power, at least 5 W,
-  and a stroke quicker, never above where the rate started) once heart rate has been 5 bpm under
-  for a minute, and not in a part's first 5 minutes, while heart rate is still climbing to where
-  the pace will hold it. As light as it goes with heart rate still over: "Keep it this light."
-  once. The power starts at the part's own: the 4×4's from its progression, an easy or steady
-  row's from how the last one of either ended (`workout::easy_power`: its last 10 minutes' power,
-  a step lighter if heart rate there was over the ceiling, a step more if 5 bpm under), else the
-  first step sets it from what the rower is pulling. The bands of the corrections move with the
-  pace (power: the part's own width, else 10% either side, never under 5 W either side). Built
-  after an easy row on 2026-11-23 went over the ceiling in its first minutes and stayed there:
-  the old pace only slowed the rate, a stroke at most, and otherwise kept saying "Ease off." with
-  no number however far the rower eased off.
+- **The pace is the coach's** (`cues::Pacer`): fixed for the tests and rate steps. Easy and
+  steady rows are UT2 at **one power held all the way**, by the rower's choice (2026-11-23), with
+  heart rate measuring it rather than steering it: it lags the work by a minute or two and drifts
+  up over a row at the same power, so steering by it walks the power down all row (that day's
+  version did, without bringing heart rate under the line), and a power that moves spoils the
+  drift that judges it. The power comes from how far heart rate
+  drifted on the last easy or steady row (`workout::easy_power`): its second half's power, 5 W
+  more when the drift (§6, aerobic decoupling, measured from Go) was under 5%, 5 W less when
+  over 10% (above the aerobic threshold), else the same; to the nearest 5 W, never under 30 W. A
+  row too short to measure drift (13 min) gives nothing; with no row to go on the rower rows at
+  their own power. Heart rate is a **guardrail**: for easy and steady rows the top of zone 3, for
+  the 4×4's work 95% of max. Over it for 30 s, a step lighter and a stroke slower, at most every
+  75 s: 10% less power (at least 5 W, to the nearest 5 W, never under 30 W; from what the rower
+  is pulling when the part has no power of its own), never under the rate band ("Heart rate 168.
+  Lighter: 35 watts, rate 18."). As light as it goes with heart rate still over: "Keep it this
+  light." once. It never steps back up within the row. The bands of the corrections move with
+  the pace (power: the part's own width, else 10% either side, never under 5 W either side).
+  Sources disagree on UT2 by heart rate (60–70% of max, 50–70% or 60–70% of the reserve, a
+  20 bpm spread for one rower) and by power (55–65% of 2k watts, from a calculator); what they
+  stand for is "under the aerobic threshold", which the drift measures on the rower's own rows.
+  Measuring it from heart-rate variability (DFA-α1 crossing 0.75, validated for running and
+  cycling, not rowing) would need the H10's beat-to-beat intervals, which the PM5 doesn't pass on.
 
 ### 5.4 The good stroke, position by position
 
@@ -487,12 +493,13 @@ the review screen. That comment is where the rower says the screen was wrong.
   set by hand or estimated as `208 − 0.7 × age` (age from the logbook). When a session's
   highest 10 s mean exceeds it, the report suggests raising it; it doesn't raise it itself,
   because a dry strap at the start of a row can read high for many seconds.
-- **Live**: zone on every stroke line, a pace that steps for the HR ceiling (`--zone N` or the easy plan).
+- **Live**: zone on every stroke line, a heart-rate guardrail that takes the pace a step lighter (`--zone N`, the easy plan, the 4×4).
 - **Per session** (`analysis::session::Summary`):
   - Power from **average pace** (as the PM5 and logbook compute it), not the mean of stroke watts.
   - Banister **TRIMP**, sex-specific exponent (profile setting; the male one when unset).
   - **EF** = watts / HR.
-  - **Aerobic decoupling** = EF drop from first to second half, skipping the first 3 min (HR lag)
+  - **Aerobic decoupling** = EF drop from first to second half, skipping the first 3 min (HR lag);
+    for a piece started from the row screen, measured from its Go (a warm-up isn't drift)
     and needing 10 min after that; < 5% means aerobic fitness covers that duration.
   - **Watts at rate 20** for strokes at 19.5–20.5 spm by their own timing (the PM5's spm is a
     whole number), needing 2 min of them.
@@ -613,11 +620,11 @@ Fitness after a long gap is unknown, so the ramp measures it:
 3. The bands come from that history: mean of the best 3 comparable pieces and
    of the worst 3. EF ≥ best → fitness held, 1-week ramp. EF ≤ worst → full 2–3 weeks.
    Between → 2 weeks. Needs ≥ 4 comparable pieces.
-4. Ramp week: 3 × 20–25 min easy at rate 18–20 (`--plan easy`: HR under zone 2's top), no intervals.
+4. Ramp week: 3 × 20–25 min easy at rate 18–20 (`--plan easy`: UT2 at one power, §5.3), no intervals.
 
 ### 8.3 Weekly template after the ramp
 
-- 2 × steady: zone 2, 30–45 min, rate 18–20, technique focus.
+- 2 × steady: UT2 at one power (§5.3), 30–45 min, rate 18–20, technique focus.
 - 1 × intensity: the Norwegian 4×4 (4 hard intervals at 85–95% of max HR, rate 20–26, 3 min easy
   between, building from 2 to 4 min each); rate steps (4 × 5 min stepping rate 20/22/24 at matched
   form) by choice on the row screen.

@@ -9,9 +9,9 @@ use clap::ValueEnum;
 pub enum Plan {
     /// 20 min at rate 20, 48–58 W: the comeback-ramp reference row
     Reference,
-    /// 20 min easy at rate 18–20, heart rate kept under zone 2's top
+    /// 20 min easy (UT2) at one power, rate 18–20
     Easy,
-    /// 30 min steady in zone 2 at rate 18–20
+    /// 30 min steady (UT2) at one power, rate 18–20
     Steady,
     /// The benchmark: 20 min held at exactly rate 20, best steady power
     Rate20,

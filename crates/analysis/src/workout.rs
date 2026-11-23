@@ -17,9 +17,9 @@ use crate::zones::HeartProfile;
 pub enum Kind {
     /// 20 min at rate 20, ~53 W: measures what fitness is left after a gap.
     Reference,
-    /// 20–25 min easy, rate 18–20, zone 2 or below.
+    /// 20–25 min easy (UT2) at one power, rate 18–20.
     Easy,
-    /// 30–45 min zone 2, rate 18–20.
+    /// 30–45 min of the same.
     Steady,
     /// Rate steps at matched form: 4 × 5 min at 20 / 22 / 24 / 22.
     RateSteps,
@@ -66,8 +66,8 @@ impl Kind {
     pub fn describe(self) -> &'static str {
         match self {
             Self::Reference => "reference row: 20 min at rate 20, about 53 W",
-            Self::Easy => "easy row: rate 18–20, heart rate in zone 2 or below",
-            Self::Steady => "steady row: zone 2, rate 18–20",
+            Self::Easy => "easy row (UT2): one power all the way at rate 18–20, set by how heart rate drifted last time",
+            Self::Steady => "steady row (UT2): one power all the way at rate 18–20, longer",
             Self::RateSteps => "rate steps: 4 × 5 min at rate 20 / 22 / 24 / 22, 2 min easy between, same form at every rate",
             Self::FourByFour => "Norwegian 4×4: 4 hard intervals (heart rate 85–95% of max), 3 min easy between, building to 4 min each",
             Self::Rate20Test => "rate-20 test: 20 min held at exactly 20 spm, best steady power",
@@ -163,7 +163,10 @@ impl Kind {
     }
 
     fn targets(self, heart: Option<&HeartProfile>) -> Workout {
-        let zone2_top = heart.and_then(|h| h.zone_bpm(2)).map(|(_, top)| top);
+        // An easy row's heart-rate ceiling is a guardrail, the top of zone 3:
+        // its power is what aims it (`easy_power`), and heart rate drifting
+        // over the row is how that power is judged.
+        let guardrail = heart.and_then(|h| h.zone_bpm(3)).map(|(_, top)| top);
         let piece = |minutes: f64, targets: Targets| Workout::Piece {
             minutes: Some(minutes),
             targets,
@@ -171,7 +174,7 @@ impl Kind {
         let easy = Targets {
             rate: Some((17.5, 20.5)),
             watts: None,
-            hr_max: zone2_top,
+            hr_max: guardrail,
         };
         match self {
             Self::Reference => piece(
@@ -419,26 +422,36 @@ pub fn progression(kind: Kind, last: &[WorkInterval], hr_top: Option<f64>, effor
     }
 }
 
-/// An easy or steady row's power, from how the last one ended (`last`):
-/// the power of its last 10 minutes, a pace step lighter when heart rate
-/// there was over the ceiling (`hr_top`), a step more when it was well
-/// under, which is where the coach would have taken it next. `None` for a
-/// row too short to have a last 10 minutes, or without power and heart rate
-/// in them: the first one's power is set by heart rate as it's rowed.
-pub fn easy_power(last: &Summary, hr_top: f64) -> Option<Progression> {
-    let end = last.last_10_min.as_ref()?;
-    let (w, hr) = (end.watts?, end.hr?);
-    let (next, why) = if hr > hr_top {
-        (cues::lighter(w).unwrap_or(w.round()), format!("over {hr_top:.0}"))
-    } else if hr <= hr_top - cues::PACE_UNDER_BPM {
-        (cues::heavier(w), format!("well under {hr_top:.0}"))
+/// Heart-rate drift (`Summary::decoupling_pct`) under this: the power was
+/// aerobic, and the next easy row goes up a step.
+pub const DRIFT_AEROBIC_PCT: f64 = 5.0;
+/// Over this: above the aerobic threshold, and the next one goes down a step.
+pub const DRIFT_HIGH_PCT: f64 = 10.0;
+/// The step between one easy row's power and the next's, W.
+pub const EASY_STEP_W: f64 = 5.0;
+
+/// An easy or steady row's power (UT2), from how the last one went: the
+/// power of its second half, where it settled, against how far heart rate
+/// drifted at it (`decoupling_pct`: watts per beat, second half against
+/// first). Under 5% the power was aerobic: a step more. Over 10% it was
+/// above the aerobic threshold: a step less, never under the floor.
+/// Between, the same. To the nearest 5 W. `None` for a row too short to
+/// measure drift: the first one's power is the rower's own.
+pub fn easy_power(last: &Summary) -> Option<Progression> {
+    let drift = last.decoupling_pct?;
+    let w = last.second_half.as_ref()?.watts?;
+    let (next, why) = if drift < DRIFT_AEROBIC_PCT {
+        (w + EASY_STEP_W, "under 5%, aerobic")
+    } else if drift > DRIFT_HIGH_PCT {
+        (w - EASY_STEP_W, "over 10%, above the aerobic threshold")
     } else {
-        (w.round(), format!("close to {hr_top:.0}"))
+        (w, "5–10%, about right")
     };
+    let next = ((next / 5.0).round() * 5.0).max(cues::WATTS_FLOOR);
     Some(Progression {
         watts: vec![next],
         work_s: None,
-        note: format!("Last easy row ended at {w:.0} W with heart rate {hr:.0}, {why}: {next:.0} W to start."),
+        note: format!("Last easy row: {w:.0} W in its second half, heart rate drifting {drift:.0}% ({why}): {next:.0} W this time."),
     })
 }
 
@@ -446,16 +459,9 @@ pub fn easy_power(last: &Summary, hr_top: f64) -> Option<Progression> {
 /// `Stage` events, or in a row recorded before those (timed by the PM5),
 /// from the PM5's interval clock. A piece has none.
 pub fn work_windows(events: &[Event]) -> Vec<(i64, i64)> {
-    let stages: Vec<(i64, Stage, u32)> = events
-        .iter()
-        .filter_map(|e| match e.kind {
-            EventKind::Stage { stage, n } => Some((e.t_us, stage, n)),
-            _ => None,
-        })
-        .collect();
+    let stages = stages(events);
     if !stages.is_empty() {
-        let intervals = stages.iter().any(|&(_, s, _)| s == Stage::Rest) || stages.iter().any(|&(_, s, n)| s == Stage::Work && n > 1);
-        return if intervals { windows(stages.iter().map(|&(t, s, _)| (t, Some(s))), events) } else { Vec::new() };
+        return if intervals(&stages) { windows(stages.iter().map(|&(t, s, _)| (t, Some(s))), events) } else { Vec::new() };
     }
     let mut clock = IntervalClock::default();
     let polls = events.iter().filter_map(|e| match &e.kind {
@@ -463,6 +469,32 @@ pub fn work_windows(events: &[Event]) -> Vec<(i64, i64)> {
         _ => None,
     });
     windows(polls, events)
+}
+
+/// When a piece ran: from Go to Time (or the recording's end). `None` for
+/// intervals (`work_windows`) and for a row recorded before `Stage` events.
+pub fn piece_window(events: &[Event]) -> Option<(i64, i64)> {
+    let stages = stages(events);
+    if intervals(&stages) {
+        return None;
+    }
+    windows(stages.iter().map(|&(t, s, _)| (t, Some(s))), events).first().copied()
+}
+
+/// The coach's `Stage` events: when each part began.
+fn stages(events: &[Event]) -> Vec<(i64, Stage, u32)> {
+    events
+        .iter()
+        .filter_map(|e| match e.kind {
+            EventKind::Stage { stage, n } => Some((e.t_us, stage, n)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Stages of an interval workout: a rest, or a second work interval.
+fn intervals(stages: &[(i64, Stage, u32)]) -> bool {
+    stages.iter().any(|&(_, s, n)| s == Stage::Rest || (s == Stage::Work && n > 1))
 }
 
 /// Work windows from stage changes in time order: each work to the next change.
@@ -570,39 +602,53 @@ mod tests {
     }
 
     #[test]
-    fn an_easy_row_starts_where_the_last_one_would_have_gone_next() {
-        let ended = |watts: f64, hr: f64| Summary {
-            last_10_min: Some(crate::session::Segment {
+    fn an_easy_row_steps_by_how_far_heart_rate_drifted_on_the_last() {
+        let rowed = |watts: f64, drift: f64| Summary {
+            second_half: Some(crate::session::Segment {
                 watts: Some(watts),
-                hr: Some(hr),
                 ..Default::default()
             }),
+            decoupling_pct: Some(drift),
             ..Default::default()
         };
-        let start = |s: &Summary| easy_power(s, 148.0).map(|p| p.watts[0]);
-        assert_eq!(start(&ended(43.4, 151.0)), Some(40.0), "over: a step lighter");
-        assert_eq!(start(&ended(40.0, 146.0)), Some(40.0), "close: the same");
-        assert_eq!(start(&ended(40.0, 140.0)), Some(45.0), "well under: a step more");
-        assert_eq!(start(&ended(28.0, 160.0)), Some(28.0), "never lighter than it was, at the floor");
-        assert_eq!(start(&Summary::default()), None, "too short to say");
+        let next = |s: &Summary| easy_power(s).map(|p| p.watts[0]);
+        assert_eq!(next(&rowed(41.0, 3.0)), Some(45.0), "aerobic: 5 W more");
+        assert_eq!(next(&rowed(41.0, -2.0)), Some(45.0), "heart rate easing off over the row is aerobic too");
+        assert_eq!(next(&rowed(41.0, 7.0)), Some(40.0), "about right: the same, to the nearest 5 W");
+        assert_eq!(next(&rowed(41.0, 18.0)), Some(35.0), "above the threshold: 5 W less");
+        assert_eq!(next(&rowed(32.0, 18.0)), Some(30.0), "never under the floor");
+        assert_eq!(next(&Summary::default()), None, "too short to measure drift");
         assert_eq!(
-            easy_power(&ended(43.4, 151.0), 148.0).unwrap().note,
-            "Last easy row ended at 43 W with heart rate 151, over 148: 40 W to start."
+            easy_power(&rowed(41.0, 18.0)).unwrap().note,
+            "Last easy row: 41 W in its second half, heart rate drifting 18% (over 10%, above the aerobic threshold): 35 W this time."
         );
-        let p = easy_power(&ended(40.0, 146.0), 148.0).unwrap();
+        let p = easy_power(&rowed(40.0, 7.0)).unwrap();
         let Workout::Piece { targets, .. } = Kind::Easy.workout(None, Some(&p)) else { panic!() };
         assert_eq!(targets.watts, Some((35.0, 45.0)), "the pace's band, at least 5 W either side");
     }
 
     #[test]
-    fn easy_ceiling_is_top_of_zone_2_and_the_plan_sets_its_length() {
+    fn a_piece_runs_from_go_to_time_and_intervals_have_no_piece() {
+        let at = |t_us: i64, kind: EventKind| Event { t_us, kind };
+        let stage = |stage, n| EventKind::Stage { stage, n };
+        let cue = EventKind::Cue { text: String::new() };
+        let piece = [at(0, cue.clone()), at(10, stage(Stage::Work, 1)), at(50, stage(Stage::Done, 1)), at(60, cue.clone())];
+        assert_eq!(piece_window(&piece), Some((10, 50)));
+        assert_eq!(piece_window(&piece[..2]), Some((10, 10)), "still going: to the recording's end");
+        let fours = [at(10, stage(Stage::Work, 1)), at(20, stage(Stage::Rest, 1)), at(30, stage(Stage::Work, 2))];
+        assert_eq!(piece_window(&fours), None);
+        assert_eq!(piece_window(&[at(0, cue)]), None, "no Go: no piece");
+    }
+
+    #[test]
+    fn easy_guardrail_is_top_of_zone_3_and_the_plan_sets_its_length() {
         let h = HeartProfile::new(60.0, 190.0, None).unwrap();
         let mut easy = Kind::Easy.workout(Some(&h), None);
         easy.set_minutes(25.0);
         let Workout::Piece { minutes, targets } = easy else {
             panic!("a piece");
         };
-        assert_eq!((minutes, targets.hr_max), (Some(25.0), Some(151.0)));
+        assert_eq!((minutes, targets.hr_max), (Some(25.0), Some(164.0)));
         let mut four = Kind::FourByFour.workout(None, None);
         four.set_minutes(40.0);
         assert_eq!(four, Kind::FourByFour.workout(None, None), "intervals keep their length");

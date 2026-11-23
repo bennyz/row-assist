@@ -18,7 +18,10 @@ use crate::zones::{HeartProfile, HeartStats, heart_stats};
 /// clock; distance carried across the PM5 resetting it each interval.
 /// 5: what each drive fault went with in work per stroke (`fault_costs`).
 /// 6: early arms against the stroke's own elbow at the catch, not a fixed 160°.
-pub const ANALYSIS_VERSION: u32 = 6;
+/// 7: a piece's heart-rate drift (`decoupling_pct` and the halves) from its
+/// Go, not from the recording's first stroke: a warm-up before Start isn't
+/// drift.
+pub const ANALYSIS_VERSION: u32 = 7;
 
 /// A catch-to-catch time longer than this (under 10 spm) is a pause, not a stroke.
 pub const MAX_CYCLE_S: f64 = 6.0;
@@ -183,15 +186,8 @@ pub fn summarize(strokes: &[StrokeRecord], hearts: &[(i64, u16)], profile: Optio
     };
     let span_s = (end - start) as f64 / 1e6;
 
-    let (first_half, second_half, decoupling_pct) = if span_s - DECOUPLING_WARMUP_S >= DECOUPLING_MIN_S {
-        let mid = (DECOUPLING_WARMUP_S + span_s) / 2.0;
-        let a = in_window(DECOUPLING_WARMUP_S, mid);
-        let b = in_window(mid, f64::INFINITY);
-        let pct = a.ef.zip(b.ef).map(|(e1, e2)| (e1 - e2) / e1 * 100.0);
-        (Some(a), Some(b), pct)
-    } else {
-        (None, None, None)
-    };
+    // The whole recording's; `analyze` narrows a piece's to its own, from Go.
+    let Drift { first_half, second_half, pct: decoupling_pct } = drift(strokes);
 
     let last_10_min = (span_s >= LAST_10_MIN_SESSION_S).then(|| in_window(span_s - 600.0, f64::INFINITY));
 
@@ -242,6 +238,41 @@ pub fn summarize(strokes: &[StrokeRecord], hearts: &[(i64, u16)], profile: Optio
         fault_costs: Vec::new(),
         work: Vec::new(),
     })
+}
+
+/// How far heart rate drifted against power over a stretch of rowing.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Drift {
+    pub first_half: Option<Segment>,
+    pub second_half: Option<Segment>,
+    /// How far watts per beat fell from the first half to the second, percent.
+    pub pct: Option<f64>,
+}
+
+/// Heart-rate drift over `strokes` (in time order): from
+/// `DECOUPLING_WARMUP_S` after the first catch to the end, split at the
+/// midpoint. Nothing for a stretch shorter than `DECOUPLING_MIN_S` after
+/// that warm-up.
+pub fn drift(strokes: &[StrokeRecord]) -> Drift {
+    let (Some(first), Some(last)) = (strokes.first(), strokes.last()) else {
+        return Drift::default();
+    };
+    let start = first.t_catch_us;
+    let end = last.t_next_catch_us.or(last.t_finish_us).unwrap_or(last.t_catch_us);
+    let span_s = (end - start) as f64 / 1e6;
+    if span_s - DECOUPLING_WARMUP_S < DECOUPLING_MIN_S {
+        return Drift::default();
+    }
+    let at = |s: f64| start.saturating_add((s * 1e6) as i64);
+    let mid = at((DECOUPLING_WARMUP_S + span_s) / 2.0);
+    let a = segment(strokes.iter().filter(|s| s.t_catch_us >= at(DECOUPLING_WARMUP_S) && s.t_catch_us < mid));
+    let b = segment(strokes.iter().filter(|s| s.t_catch_us >= mid));
+    let pct = a.ef.zip(b.ef).map(|(e1, e2)| (e1 - e2) / e1 * 100.0);
+    Drift {
+        first_half: Some(a),
+        second_half: Some(b),
+        pct,
+    }
 }
 
 /// Strokes this soon after the first catch are still starting up, not
