@@ -275,6 +275,21 @@ body before early arms, early knees last. Each is tested against the simulator's
 and nothing fires on clean rowing. Real deliberately-rowed fixtures are still to come.
 Every fault has a matching drill (legs-only, pick drill, pause at hands-away, rate ladder).
 
+**What a fault goes with in work (`analysis::cost`, analysis version 5).** How often a fault
+shows can't rank faults that show on nearly every stroke: there are no clean strokes to
+compare with. So the drive faults are compared by
+degree. The measure behind each one (the shin at the catch for 1, the trunk's tip for 2,
+the elbow for 3, when the body starts for 9) splits the strokes into thirds, and the worst
+third's work per stroke is held against the best third's, whether or not either crossed the
+fault's line. Each stroke's work is first taken over the median of the 5 strokes either side,
+so that intervals, rate changes and tiring, which move the measure too, don't count. In an
+interval workout only work strokes are compared, from 10 s into each interval. At least 15
+strokes a third; a rank test (Mann–Whitney, |z| ≥ 2) marks the difference clear. The review
+shows each fault's difference in percent and watts and, for the clear ones, both thirds' mean
+force curves, so where in the drive they part is visible; `rowctl report` prints the costs line.
+The recovery's faults (4, 7) aren't costed: they would show in the next drive, if anywhere.
+It is what goes together, not proof of cause.
+
 ### 5.2 Coach behaviour
 
 - **One focus per session**, picked by the planner from the most frequent fault in recent sessions.

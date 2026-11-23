@@ -1,6 +1,7 @@
 //! Pure analysis over the event stream. No I/O: everything here is a function
 //! of events, so it runs the same live, on replay, and in tests.
 
+pub mod cost;
 pub mod cues;
 pub mod fixtures;
 pub mod ideal;
@@ -36,7 +37,9 @@ pub fn analyze(events: &[Event], profile: Option<&zones::HeartProfile>) -> Analy
     let mut summary = session::summarize(&strokes, &hearts, profile);
     if let Some(s) = &mut summary {
         s.camera = camera;
-        s.work = session::work_intervals(&strokes, &workout::work_windows(events));
+        let windows = workout::work_windows(events);
+        s.work = session::work_intervals(&strokes, &windows);
+        s.fault_costs = cost::fault_costs(&strokes, &windows);
     }
     Analysis {
         summary,

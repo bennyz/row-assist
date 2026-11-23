@@ -74,6 +74,18 @@ fn lines(events: &[Event], feel: Option<&Feel>) -> Vec<String> {
     if !rates.is_empty() {
         out.push(format!("faults   {}", rates.join(", ")));
     }
+    let costs: Vec<String> = a
+        .summary
+        .iter()
+        .flat_map(|s| &s.fault_costs)
+        .map(|c| {
+            let noise = if c.clear { "" } else { " (noise)" };
+            format!("{} {:+.1}% work{noise}", c.fault.label(), c.work_pct)
+        })
+        .collect();
+    if !costs.is_empty() {
+        out.push(format!("costs    {}", costs.join(", ")));
+    }
     out.extend(order(&a.strokes));
     out.extend(cues(events, &a.strokes));
     let drops: Vec<String> = [Device::Pm5, Device::H10, Device::Camera]

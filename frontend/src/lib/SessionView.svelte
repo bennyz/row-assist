@@ -1,6 +1,7 @@
 <script>
   import { getSession } from './api.js';
   import { PLANS, clock, dateLabel, faultList, fixed, grouped, pace, timeLabel } from './format.js';
+  import FaultCosts from './FaultCosts.svelte';
   import FaultRates from './FaultRates.svelte';
   import Feel from './Feel.svelte';
   import Figures from './Figures.svelte';
@@ -177,6 +178,12 @@
       <section>
         <h2>Technique</h2>
         <FaultRates rates={s.faults} camera={!!s.camera} />
+        {#if s.fault_costs?.length}
+          <div class="order">
+            <h3>Technique and work per stroke</h3>
+            <FaultCosts costs={s.fault_costs} />
+          </div>
+        {/if}
         {#if s.camera}
           <div class="figures">
             <Figures {stroke} typicalCatch={detail.typical_catch} typicalFinish={detail.typical_finish} />

@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::cost::FaultCost;
 use crate::metrics::{efficiency_factor, watts_from_pace};
 use crate::strokes::{CURVE_POINTS, StrokeRecord};
 use crate::technique::{CameraView, FaultRate, fault_rates, handle_timing};
@@ -15,7 +16,8 @@ use crate::zones::{HeartProfile, HeartStats, heart_stats};
 /// and the faults read from it: early body, early knees.
 /// 4: an interval workout's work intervals (`work`), by the PM5's interval
 /// clock; distance carried across the PM5 resetting it each interval.
-pub const ANALYSIS_VERSION: u32 = 4;
+/// 5: what each drive fault went with in work per stroke (`fault_costs`).
+pub const ANALYSIS_VERSION: u32 = 5;
 
 /// A catch-to-catch time longer than this (under 10 spm) is a pause, not a stroke.
 pub const MAX_CYCLE_S: f64 = 6.0;
@@ -143,6 +145,8 @@ pub struct Summary {
     pub camera: Option<CameraView>,
     /// How often each fault showed up (camera faults only with the camera).
     pub faults: Vec<FaultRate>,
+    /// What each drive fault went with in work per stroke (camera sessions).
+    pub fault_costs: Vec<FaultCost>,
     /// An interval workout's work intervals as the PM5 timed them, in order;
     /// empty for a single piece.
     pub work: Vec<WorkInterval>,
@@ -233,7 +237,8 @@ pub fn summarize(strokes: &[StrokeRecord], hearts: &[(i64, u16)], profile: Optio
         profile: profile.copied(),
         camera: None,
         faults: fault_rates(strokes),
-        // Filled by `analyze`, which has the PM5's workout states.
+        // Filled by `analyze`, which has the workout's intervals.
+        fault_costs: Vec::new(),
         work: Vec::new(),
     })
 }
