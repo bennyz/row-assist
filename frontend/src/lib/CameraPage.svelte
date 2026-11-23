@@ -4,6 +4,7 @@
   // session and answers with the framing check.
   import { onDestroy, onMount } from 'svelte';
   import { BONES, VISIBLE, ClockSync, clearerSide, createLandmarker, frameMessage, pickJoints } from './pose.js';
+  import { keepScreenOn } from './wake.js';
 
   // `phone`: the page runs on a phone (/phone/camera), full window.
   let { phone = false } = $props();
@@ -41,7 +42,8 @@
   let fpsFrom = performance.now();
   const clock = new ClockSync();
   let pingTimer;
-  let wake = null;
+  // Lets go of the screen; set once the camera is open.
+  let letGo = null;
   let fpsReports = 0;
 
   // Progress and problems go to Row Assist as well, into its log on the
@@ -65,7 +67,6 @@
         'Browsers only allow the camera on localhost or HTTPS. On the computer with the camera, open http://localhost:8080/camera; for a phone, start rowctl with --phone and open the address it prints.';
       return;
     }
-    document.addEventListener('visibilitychange', onVisible);
     // Connected first, so the computer hears how loading goes.
     connect();
     note(`opened: ${navigator.userAgent}`);
@@ -82,33 +83,11 @@
   onDestroy(() => {
     alive = false;
     clearTimeout(pingTimer);
-    document.removeEventListener('visibilitychange', onVisible);
-    wake?.release().catch(() => {});
+    letGo?.();
     stream?.getTracks().forEach((t) => t.stop());
     ws?.close();
     landmarker?.close();
   });
-
-  // A phone's screen locking stops the camera: hold it on while the page is
-  // visible (the lock is dropped whenever the page is hidden).
-  async function keepAwake() {
-    if (wake && !wake.released) return;
-    if (!navigator.wakeLock || document.visibilityState !== 'visible') {
-      awake = false;
-      return;
-    }
-    try {
-      wake = await navigator.wakeLock.request('screen');
-      awake = true;
-      wake.addEventListener('release', () => (awake = false));
-    } catch {
-      awake = false;
-    }
-  }
-
-  function onVisible() {
-    if (document.visibilityState === 'visible' && stream) keepAwake();
-  }
 
   async function openCamera() {
     stage = 'Opening the camera…';
@@ -146,7 +125,8 @@
     res = `${video.videoWidth}×${video.videoHeight}`;
     stage = null;
     note(`camera open: ${res}`);
-    keepAwake();
+    // A phone's screen locking stops the camera.
+    letGo ??= keepScreenOn((held) => (awake = held));
     schedule();
   }
 

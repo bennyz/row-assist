@@ -24,6 +24,7 @@
   import RowBar from './RowBar.svelte';
   import Sequence from './Sequence.svelte';
   import { StrokeClock, WRIST, rhythmAt } from './strokeclock.js';
+  import { keepScreenOn } from './wake.js';
 
   let { onsaved } = $props();
 
@@ -154,6 +155,9 @@
     now = performance.now();
     if (alive) raf = requestAnimationFrame(animate);
   }
+
+  // The laptop in front of the erg stays on while the row screen is up.
+  onMount(() => keepScreenOn());
 
   onMount(() => {
     connect();
