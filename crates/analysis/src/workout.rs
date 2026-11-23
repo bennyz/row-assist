@@ -6,7 +6,7 @@
 use model::{Event, EventKind, Pm5Status, Stage};
 use serde::{Deserialize, Serialize};
 
-use crate::cues::{self, PACE_BAND, Targets};
+use crate::cues::{self, PACE_BAND, PACE_BAND_MIN_W, Targets};
 use crate::session::{Summary, WorkInterval};
 use crate::zones::HeartProfile;
 
@@ -152,7 +152,11 @@ impl Kind {
                     t.watts = Some(band(x, POWER_BAND));
                 }
             }
-            (Workout::Piece { targets, .. }, Some(p)) => targets.watts = p.watts.first().map(|&x| band(x, PACE_BAND)),
+            (Workout::Piece { targets, .. }, Some(p)) => {
+                // The pace's band: never narrower than PACE_BAND_MIN_W either side.
+                let half = |x: f64| (x * PACE_BAND).max(PACE_BAND_MIN_W);
+                targets.watts = p.watts.first().map(|&x| ((x - half(x)).round(), (x + half(x)).round()));
+            }
             (_, None) => {}
         }
         w
@@ -587,7 +591,7 @@ mod tests {
         );
         let p = easy_power(&ended(40.0, 146.0), 148.0).unwrap();
         let Workout::Piece { targets, .. } = Kind::Easy.workout(None, Some(&p)) else { panic!() };
-        assert_eq!(targets.watts, Some((36.0, 44.0)));
+        assert_eq!(targets.watts, Some((35.0, 45.0)), "the pace's band, at least 5 W either side");
     }
 
     #[test]
