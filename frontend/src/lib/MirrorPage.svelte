@@ -1,11 +1,13 @@
 <script>
   // The row screen, in front of the erg: your body live beside a pace ghost,
-  // the good stroke on your body rowed at the rhythm to row at from each of
-  // your catches (row with it: where you differ is the order your legs, body
-  // and arms move in, or your timing), the numbers against their targets, and
-  // in rests and between rows the last stroke: the order it was rowed in, and
-  // its catch and finish frozen. The ghost's rate is the coach's, which
-  // slows when heart rate stays over a ceiling.
+  // the good stroke on your body rowed by the pacer, which leads at the
+  // rhythm to row at from each work part's Go (row with it: where you differ
+  // is the order your legs, body and arms move in, or your timing), a bar
+  // under it that fills through the pacer's stroke and names the step to row
+  // now, the numbers against their targets, and in rests and between rows
+  // the last stroke: the order it was rowed in, and its catch and finish
+  // frozen. The pacer's rate is the coach's, which with the power target
+  // steps down while heart rate stays over a ceiling.
   // With `rowctl serve` it also shows the row's state and devices, the next
   // row's plan before the first stroke, and the phone's code while no camera
   // is connected; when a row is saved it hands over to the review
@@ -23,6 +25,8 @@
   import PhoneSetup from './PhoneSetup.svelte';
   import RowBar from './RowBar.svelte';
   import Sequence from './Sequence.svelte';
+  import StrokeBar from './StrokeBar.svelte';
+  import { driveEase, recoveryEase } from './pacer.js';
   import { StrokeClock, WRIST, rhythmAt } from './strokeclock.js';
   import { keepScreenOn } from './wake.js';
 
@@ -70,6 +74,10 @@
   let extent = $state(null);
   let now = $state(performance.now());
   let catchAt = $state(null);
+  // The pacer: the work part it is rowing (its number), and when its stroke
+  // began (performance.now()).
+  let pacerPart = null;
+  let beatAt = $state(null);
   // Your last few drive times, s, by the camera.
   let drives = $state([]);
   const recent = [];
@@ -113,14 +121,19 @@
         if (!extent || seen % EXTENT_EVERY === 0) extent = reach(recent) ?? extent;
         const before = strokeClock.catchAt;
         strokeClock.push(performance.now(), m.joints[WRIST]?.[0]);
-        // The ghost starts its drive when the catch is seen, not when it was:
-        // a turn is only certain a moment later, and jumping ahead to where
-        // the ghost should be by then reads as a lurch.
         if (strokeClock.catchAt !== before) catchAt = performance.now();
       } else if (m.type === 'target') {
         target = m;
       } else if (m.type === 'targets') {
         targets = m;
+        // A work part begins (Go, or the next interval): the pacer takes its
+        // first stroke now and leads from there. A rest, or nothing to row
+        // at, stops it.
+        const part = m.rhythm && m.position?.stage === 'work' ? m.position.n : null;
+        if (part !== pacerPart) {
+          pacerPart = part;
+          beatAt = part == null ? null : performance.now();
+        }
       } else if (m.type === 'stroke') {
         last = m;
         if (m.drive_s != null) drives = [...drives.slice(1 - OWN_DRIVES), m.drive_s];
@@ -165,6 +178,11 @@
 
   function animate() {
     now = performance.now();
+    // The pacer's next stroke, at the rhythm as it is then.
+    if (beatAt != null && rhythm) {
+      const cycle = (rhythm.drive_s + rhythm.recovery_s) * 1000;
+      while (now - beatAt >= cycle) beatAt += cycle;
+    }
     if (alive) raf = requestAnimationFrame(animate);
   }
 
@@ -199,30 +217,29 @@
     const drive_s = Math.min(cycle * MAX_DRIVE_SHARE, Math.max(DRIVE_S[0], Math.min(DRIVE_S[1], own)));
     return { ...at, drive_s, recovery_s: cycle - drive_s };
   });
-  // Seconds since your last catch, while rowing: your place in the rhythm.
+  // Seconds since your last catch, while rowing.
   const since = $derived(catchAt == null ? null : (now - catchAt) / 1000);
   const rowing = $derived(since != null && since < IDLE_S);
-  // Where the workout is (none before Go); the ghost sits out the rests.
+  // Where the workout is (none before Go).
   const position = $derived(targets?.position ?? null);
-  // The pace ghost: the good stroke on your body, from your last catch at the
-  // rhythm to row at (on the live figure's own clock, so it shares its
-  // delay). Rowing with it, you overlap; rushing the slide, it is still
-  // coming forward when you catch; late, it waits at the catch.
+  // Where the pacer is in its stroke: the drive or the recovery, and how far
+  // through it (0–1). It keeps the rhythm whether you keep up or not: it is
+  // there to lead.
+  const beat = $derived.by(() => {
+    if (beatAt == null || !rhythm) return null;
+    const t = Math.max(0, (now - beatAt) / 1000);
+    return t < rhythm.drive_s
+      ? { drive: true, u: t / rhythm.drive_s }
+      : { drive: false, u: Math.min(1, (t - rhythm.drive_s) / rhythm.recovery_s) };
+  });
+  // The pace ghost: the good stroke on your body, rowed by the pacer.
+  // Rowing with it, you overlap; rushing the slide, you reach the catch
+  // before it does; late, it is already driving.
   const paceGhost = $derived.by(() => {
     const path = target?.path;
-    if (!path || !rhythm || !me || position?.stage === 'rest') return null;
-    const atCatch = path.recovery[path.recovery.length - 1];
-    if (!rowing) return atCatch;
-    if (since < rhythm.drive_s) return along(path.drive, driveEase(since / rhythm.drive_s));
-    const r = since - rhythm.drive_s;
-    return r < rhythm.recovery_s ? along(path.recovery, recoveryEase(r / rhythm.recovery_s)) : atCatch;
+    if (!path || !me || !beat) return null;
+    return beat.drive ? along(path.drive, driveEase(beat.u)) : along(path.recovery, recoveryEase(beat.u));
   });
-  // The handle through the drive: off the catch at once (the legs), easing
-  // into the finish. Half even, half smoothstep: smoothstep alone sat at the
-  // catch, then raced through the middle.
-  const driveEase = (x) => 0.5 * x + 0.5 * x * x * (3 - 2 * x);
-  // Through the recovery: hands away and body over quickly, then a slow slide.
-  const recoveryEase = (x) => 1 - (1 - x) ** 1.6;
   /** The figure `u` of the way along a path of figures, between its steps. */
   function along(frames, u) {
     const k = Math.min(frames.length - 1, Math.max(0, u) * (frames.length - 1));
@@ -338,12 +355,13 @@
           <circle class="joint" cx={x} cy={y} r="9" />
         {/each}
       </svg>
-      {#if paceGhost}
-        <p class="legend">
-          <span class="key you"></span>You <span class="key target"></span>Row with the grey figure: rate {Math.round(rhythm.rate)}
-        </p>
-      {/if}
-      {#if timing}<p class="timing {timing.tone}">{timing.text}</p>{/if}
+      <!-- Over the stage's corner, so it takes no height from the figure. -->
+      <div class="legend">
+        {#if paceGhost}
+          <p><span class="key you"></span>You <span class="key target"></span>Row with the grey figure: rate {Math.round(rhythm.rate)}</p>
+        {/if}
+        {#if timing}<p class="timing {timing.tone}">{timing.text}</p>{/if}
+      </div>
       {#if !me}
         {#if row && row.devices.camera.connected !== true}
           <div class="overlay"><PhoneSetup /></div>
@@ -391,6 +409,7 @@
   {/if}
 
   <footer>
+    {#if beat}<StrokeBar {rhythm} {beat} />{/if}
     {#if cue}
       <p class="cue">{cue}</p>
     {/if}
@@ -460,7 +479,6 @@
     display: none;
   }
   .timing {
-    margin: 0.75rem 0 0;
     font-size: 22px;
   }
   .timing.ok {
@@ -475,8 +493,8 @@
     height: auto;
     /* Everything on one screen, read from the erg: the figure gives way to
        the numbers above it and the coach's words below. */
-    max-height: calc(100vh - 25rem);
-    min-height: 16rem;
+    max-height: calc(100vh - 34rem);
+    min-height: 14rem;
   }
   .marks {
     margin-top: 0.75rem;
@@ -508,6 +526,10 @@
     position: absolute;
     top: 0;
     left: 0;
+    display: grid;
+    gap: 0.4rem;
+  }
+  .legend p {
     display: flex;
     align-items: center;
     gap: 0.5rem;

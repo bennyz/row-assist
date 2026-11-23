@@ -6,8 +6,8 @@
 use model::{Event, EventKind, Pm5Status, Stage};
 use serde::{Deserialize, Serialize};
 
-use crate::cues::Targets;
-use crate::session::WorkInterval;
+use crate::cues::{self, PACE_BAND, Targets};
+use crate::session::{Summary, WorkInterval};
 use crate::zones::HeartProfile;
 
 /// The workouts there are: the planner proposes one, the rower may pick
@@ -139,16 +139,21 @@ impl Kind {
     }
 
     /// The workout with its targets: `heart` gives the heart-rate ceilings,
-    /// `progression` an interval workout's power and length from last time.
-    /// A piece's length is the shortest the kind allows: the plan (or the
-    /// command line) can set a longer one.
+    /// `progression` the power from last time (and an interval workout's
+    /// length). A piece's length is the shortest the kind allows: the plan
+    /// (or the command line) can set a longer one.
     pub fn workout(self, heart: Option<&HeartProfile>, progression: Option<&Progression>) -> Workout {
         let mut w = self.targets(heart);
-        if let (Workout::Intervals { work_s, work, .. }, Some(p)) = (&mut w, progression) {
-            *work_s = p.work_s.unwrap_or(*work_s);
-            for (t, &x) in work.iter_mut().zip(&p.watts) {
-                t.watts = Some(((x * (1.0 - POWER_BAND)).round(), (x * (1.0 + POWER_BAND)).round()));
+        let band = |x: f64, k: f64| ((x * (1.0 - k)).round(), (x * (1.0 + k)).round());
+        match (&mut w, progression) {
+            (Workout::Intervals { work_s, work, .. }, Some(p)) => {
+                *work_s = p.work_s.unwrap_or(*work_s);
+                for (t, &x) in work.iter_mut().zip(&p.watts) {
+                    t.watts = Some(band(x, POWER_BAND));
+                }
             }
+            (Workout::Piece { targets, .. }, Some(p)) => targets.watts = p.watts.first().map(|&x| band(x, PACE_BAND)),
+            (_, None) => {}
         }
         w
     }
@@ -410,6 +415,29 @@ pub fn progression(kind: Kind, last: &[WorkInterval], hr_top: Option<f64>, effor
     }
 }
 
+/// An easy or steady row's power, from how the last one ended (`last`):
+/// the power of its last 10 minutes, a pace step lighter when heart rate
+/// there was over the ceiling (`hr_top`), a step more when it was well
+/// under, which is where the coach would have taken it next. `None` for a
+/// row too short to have a last 10 minutes, or without power and heart rate
+/// in them: the first one's power is set by heart rate as it's rowed.
+pub fn easy_power(last: &Summary, hr_top: f64) -> Option<Progression> {
+    let end = last.last_10_min.as_ref()?;
+    let (w, hr) = (end.watts?, end.hr?);
+    let (next, why) = if hr > hr_top {
+        (cues::lighter(w).unwrap_or(w.round()), format!("over {hr_top:.0}"))
+    } else if hr <= hr_top - cues::PACE_UNDER_BPM {
+        (cues::heavier(w), format!("well under {hr_top:.0}"))
+    } else {
+        (w.round(), format!("close to {hr_top:.0}"))
+    };
+    Some(Progression {
+        watts: vec![next],
+        work_s: None,
+        note: format!("Last easy row ended at {w:.0} W with heart rate {hr:.0}, {why}: {next:.0} W to start."),
+    })
+}
+
 /// When each work interval of an interval workout ran: from the coach's
 /// `Stage` events, or in a row recorded before those (timed by the PM5),
 /// from the PM5's interval clock. A piece has none.
@@ -535,6 +563,31 @@ mod tests {
         };
         let mids: Vec<f64> = work.iter().map(|t| t.rate.map(|(lo, hi)| (lo + hi) / 2.0).unwrap()).collect();
         assert_eq!(mids, RATE_STEPS);
+    }
+
+    #[test]
+    fn an_easy_row_starts_where_the_last_one_would_have_gone_next() {
+        let ended = |watts: f64, hr: f64| Summary {
+            last_10_min: Some(crate::session::Segment {
+                watts: Some(watts),
+                hr: Some(hr),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let start = |s: &Summary| easy_power(s, 148.0).map(|p| p.watts[0]);
+        assert_eq!(start(&ended(43.4, 151.0)), Some(40.0), "over: a step lighter");
+        assert_eq!(start(&ended(40.0, 146.0)), Some(40.0), "close: the same");
+        assert_eq!(start(&ended(40.0, 140.0)), Some(45.0), "well under: a step more");
+        assert_eq!(start(&ended(28.0, 160.0)), Some(28.0), "never lighter than it was, at the floor");
+        assert_eq!(start(&Summary::default()), None, "too short to say");
+        assert_eq!(
+            easy_power(&ended(43.4, 151.0), 148.0).unwrap().note,
+            "Last easy row ended at 43 W with heart rate 151, over 148: 40 W to start."
+        );
+        let p = easy_power(&ended(40.0, 146.0), 148.0).unwrap();
+        let Workout::Piece { targets, .. } = Kind::Easy.workout(None, Some(&p)) else { panic!() };
+        assert_eq!(targets.watts, Some((36.0, 44.0)));
     }
 
     #[test]

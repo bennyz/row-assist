@@ -306,7 +306,7 @@ impl Runner {
         println!("Next row: {}", proposal.kind.describe());
         self.plan_day = day;
         self.progressions.clear();
-        for k in Kind::ALL.into_iter().filter(|k| k.intervals().is_some()) {
+        for k in Kind::ALL {
             match self.ctx.progression(k).await {
                 Ok(Some(p)) => self.progressions.push((k, p)),
                 Ok(None) => {}

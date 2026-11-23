@@ -308,15 +308,18 @@ It is what goes together, not proof of cause.
 its camera view and faults as it completes (sync calibrates live on strokes 4–23 and agrees
 with the after-the-fact analysis from then on). `rowctl record --focus auto|none|<fault>`;
 auto picks the fault with the highest rate (≥ 10%) over the last 3 real sessions, camera faults
-only when the camera is on. The focus cue outranks pacing cues: at most one cue per stroke.
+only when the camera is on. At most one cue per stroke, pacing first (since 2026-11-23; the focus
+cue came first before, and a change of pace it displaced was lost): a change of pace says what to
+row at and isn't repeated, while a displaced focus cue comes again within 30 s.
 - Effort cues (HR zone) share the same queue with lower priority.
 
 **Pacing cues (Phase 1, built):** `rowctl record --plan reference --speak` (or `--rate`, `--watts`,
 `--zone`, `--minutes`) speaks short corrections through the OS speech command (`spd-say` or `espeak-ng`).
 Judged on the median of the last 6 strokes; silent for the first 60 s; ≥ 30 s between cues and
-≥ 60 s before the same cue repeats; priority heart rate > rate > power, and a held-back
-heart-rate cue blocks the power cue (never "harder" while HR is over the ceiling). Halfway and
-time calls always get through.
+≥ 60 s before the same cue repeats; rate before power. Heart rate is the pace's to answer (§5.3,
+"The pace is the coach's"), and "rate up" or "harder" come only with heart rate at least 5 bpm
+under the ceiling: over it, or close, there's no room (an easy row on 2026-11-23 heard "Rate up"
+and "Ease off" in the same minute). Halfway and time calls always get through.
 
 **Starting a workout (built):** every workout starts from the row screen's Start (the button, or
 Space/Enter): Go 10 s later ("Starting in ten seconds." … "Go."). Rowing before Start is the
@@ -357,31 +360,46 @@ The front screen shows the rower's own position, drawn from landmarks (no video 
 deliberately sparse (the rower found the step labels, part bars, rhythm bar and every-fault list
 confusing): the live figure, the **pace ghost**, three numbers, the coach's words and the day's one
 focus. The last stroke's order and frozen catch and finish show in rests and between rows; the
-review page has the rest. The camera's framing check shows only before the row: mid-row it can't
+review page has the rest. Since 2026-11-23 a **stroke bar** is back, at the rower's asking for
+something that shows when to start the drive and when to swing: not
+the old rhythm bar comparing the rower's timing with the target, but the pacer's stroke filling
+from the catch, its six steps (legs, swing, arms; hands away, body over, slide) as long as the
+rhythm gives them and timed as the ghost rows them (`pacer.js`), the step to row now lit. It shows
+in both modes, under the figure. The camera's framing check shows only before the row: mid-row it can't
 be acted on, and a check failing for part of every stroke flipped the layout each stroke.
 - **Live figure** drawn from where the feet rest (the median ankle, `LiveTechnique::figure`),
   so it holds still while the seat slides; framed to the rower's own range of movement.
 - **Pace ghost**: the good stroke on the rower's body (`Target::path`, every 2.5% of the
-  handle's travel through each phase) rowed at the rhythm to row at, from each of the rower's
-  catches on the live figure's own clock (`StrokeClock`, so it shares the camera's delay): the
-  drive at the rower's own drive time (the camera's, median of the last 5 strokes, 0.8–1.4 s and
-  at most 45% of the stroke), off the catch at once and easing into the finish; the recovery in
-  the rest of the stroke at the coach's rate (hands away and body over quickly, then a slow
-  slide); late, it waits at the catch. It starts each drive when the catch is seen, about 0.25 s
-  after it (the wrist has to come back a quarter thigh first): dated back to the catch, it jumped
-  ahead each stroke and, with the rhythm's own 1 s drive against the rower's 1.2 s, looked
-  rushed (2026-11-23). What it shows is where the time goes, drive against slide. Rowing with it, the rower overlaps it; where they differ is the order the
-  legs, body and arms move in (the faults of §5.4) or the timing, with one word under it ("On
-  rhythm" / "Slow the slide"). Before Go it rows at the rower's own rate; it sits out rests. Always
-  on, by the rower's choice (Fable, a second model advising, suggested doses after §5.3's guidance
-  hypothesis; the rower preferred it always there).
-- **Its rate is the coach's** (`cues::Pacer::rhythm`): fixed for the tests and rate steps; for a
-  part with a rate band and a heart-rate ceiling (easy and steady rows, the 4×4's work) a stroke
-  slower ("Lighter, and slower. Rate 18.") when heart rate has stayed over the ceiling 30 s, at most
-  every 75 s, never under the band; back up a stroke once it has been 5 bpm under for a minute,
-  never above where it started (no quicker rate to push heart rate up). The rate band of the
-  corrections moves with it. Pressure isn't the ghost's: the watts number and "harder"/"ease off"
-  stay, and "harder" stays blocked over the ceiling.
+  handle's travel through each phase) rowed by the **pacer**: it takes its first stroke as each
+  work part begins (Go, or the next interval's) and then keeps the rhythm to row at whether the
+  rower keeps up or not, a new stroke each cycle at the rhythm as it then is. Until 2026-11-23 it
+  started each of its strokes from the rower's catch instead, which the rower said didn't help
+  them start the drive or keep the pace: it only followed. The drive is at the rower's own drive
+  time (the camera's, median of the last 5 strokes, 0.8–1.4 s and at most 45% of the stroke), off
+  the catch at once and easing into the finish (the rhythm's own 1 s drive against the rower's
+  1.2 s looked rushed); the recovery fills the rest of the stroke at the coach's rate (hands away
+  and body over quickly, then a slow slide). Rowing with it, the rower overlaps it; ahead, they
+  reach the catch before it; behind, it is already driving. Where they differ in the order the
+  legs, body and arms move is the faults of §5.4; one word on the last stroke's timing sits by
+  the legend ("On rhythm" / "Slow the slide"). It rows only in work parts with a rhythm: not
+  before Go, not in rests. Always on, by the rower's choice (Fable, a second model advising,
+  suggested doses after §5.3's guidance hypothesis; the rower preferred it always there).
+- **The pace is the coach's** (`cues::Pacer`): fixed for the tests and rate steps. For a part
+  with a heart-rate ceiling (easy and steady rows, the 4×4's work) a power and a rate that step
+  down when heart rate has stayed over the ceiling 30 s, at most every 75 s: 10% less power (at
+  least 5 W, to the nearest 5 W, never under 30 W) and a stroke slower, never under the rate band
+  ("Heart rate 160. Lighter: 55 watts, rate 18."). Back up a step (5% more power, at least 5 W,
+  and a stroke quicker, never above where the rate started) once heart rate has been 5 bpm under
+  for a minute, and not in a part's first 5 minutes, while heart rate is still climbing to where
+  the pace will hold it. As light as it goes with heart rate still over: "Keep it this light."
+  once. The power starts at the part's own: the 4×4's from its progression, an easy or steady
+  row's from how the last one of either ended (`workout::easy_power`: its last 10 minutes' power,
+  a step lighter if heart rate there was over the ceiling, a step more if 5 bpm under), else the
+  first step sets it from what the rower is pulling. The bands of the corrections move with the
+  pace (power: the part's own width, else 10% either side, never under 5 W either side). Built
+  after an easy row on 2026-11-23 went over the ceiling in its first minutes and stayed there:
+  the old pace only slowed the rate, a stroke at most, and otherwise kept saying "Ease off." with
+  no number however far the rower eased off.
 
 ### 5.4 The good stroke, position by position
 
@@ -469,7 +487,7 @@ the review screen. That comment is where the rower says the screen was wrong.
   set by hand or estimated as `208 − 0.7 × age` (age from the logbook). When a session's
   highest 10 s mean exceeds it, the report suggests raising it; it doesn't raise it itself,
   because a dry strap at the start of a row can read high for many seconds.
-- **Live**: zone on every stroke line, HR ceiling cue (`--zone N` or the easy plan).
+- **Live**: zone on every stroke line, a pace that steps for the HR ceiling (`--zone N` or the easy plan).
 - **Per session** (`analysis::session::Summary`):
   - Power from **average pace** (as the PM5 and logbook compute it), not the mean of stroke watts.
   - Banister **TRIMP**, sex-specific exponent (profile setting; the male one when unset).

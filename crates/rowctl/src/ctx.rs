@@ -92,8 +92,7 @@ impl Ctx {
         store::history::planner_rows(&self.pool).await
     }
 
-    /// The next `kind` interval workout's power, from the last real one
-    /// with its work intervals.
+    /// The next `kind` workout's power from last time (`history::progression`).
     pub async fn progression(&self, kind: Kind) -> Result<Option<Progression>> {
         store::history::progression(&self.pool, kind, self.heart().map(|h| h.0).as_ref()).await
     }

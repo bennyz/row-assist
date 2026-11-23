@@ -3,7 +3,7 @@
 use analysis::planner::Row;
 use analysis::reference::{self, Piece};
 use analysis::technique::Fault;
-use analysis::workout::{Kind, Progression, four_by_four_hr_top, progression as next_power};
+use analysis::workout::{Kind, Progression, easy_power, four_by_four_hr_top, progression as next_power};
 use analysis::zones::HeartProfile;
 use anyhow::Result;
 use chrono::{DateTime, Local, NaiveDateTime};
@@ -149,15 +149,25 @@ pub async fn heart_profile(pool: &SqlitePool, today: i64) -> Result<Option<Heart
     Ok(profile.heart(age, watch_rest).map(|h| h.0))
 }
 
-/// The next `kind` interval workout's power, from the last real one with
-/// its work intervals.
+/// The next `kind` workout's power: an interval workout's from the last
+/// real one with its work intervals; an easy or steady row's from how the
+/// last real one of either ended, against zone 2's top. `None` for the
+/// other kinds, or with no row to go on.
 pub async fn progression(pool: &SqlitePool, kind: Kind, heart: Option<&HeartProfile>) -> Result<Option<Progression>> {
     let sessions = crate::sessions::list_sessions(pool).await?;
-    let last = sessions
-        .iter()
-        .rev()
-        .find(|s| !s.meta.simulated && s.meta.plan.as_deref() == Some(kind.name()) && !s.summary.work.is_empty());
-    Ok(last.and_then(|s| next_power(kind, &s.summary.work, heart.map(four_by_four_hr_top), s.feel.effort)))
+    let mut real = sessions.iter().rev().filter(|s| !s.meta.simulated);
+    Ok(match kind {
+        Kind::Easy | Kind::Minimum | Kind::Steady => {
+            let Some(top) = heart.and_then(|h| h.zone_bpm(2)).map(|(_, top)| top) else {
+                return Ok(None);
+            };
+            real.filter(|s| matches!(s.meta.plan.as_deref().and_then(Kind::from_name), Some(Kind::Easy | Kind::Steady)))
+                .find_map(|s| easy_power(&s.summary, top))
+        }
+        _ => real
+            .find(|s| s.meta.plan.as_deref() == Some(kind.name()) && !s.summary.work.is_empty())
+            .and_then(|s| next_power(kind, &s.summary.work, heart.map(four_by_four_hr_top), s.feel.effort)),
+    })
 }
 
 /// Real sessions the focus is chosen from.

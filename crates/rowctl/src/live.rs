@@ -497,12 +497,14 @@ impl Coach {
                 None => println!("  Drag factor {df} (no target: set one with rowctl profile --drag {df})"),
             }
         }
-        // Technique first: one cue per stroke at most.
+        // One cue per stroke at most, pacing first: a change of pace says
+        // what to row at and isn't repeated, while a technique cue it
+        // displaces comes again within half a minute.
         let technique = self.focus.as_mut().and_then(|f| f.stroke(r));
         let pacing = self.pacer.as_mut().and_then(|p| p.stroke(r));
-        match (technique, pacing) {
-            (Some(t), _) => self.say(t.text()),
-            (None, Some(p)) => self.say(&p.text()),
+        match (pacing, technique) {
+            (Some(p), _) => self.say(&p.text()),
+            (None, Some(t)) => self.say(t.text()),
             (None, None) => {}
         }
     }

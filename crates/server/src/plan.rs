@@ -64,7 +64,8 @@ pub async fn get(State(api): State<Api>) -> Result<Json<PlanView>, ApiError> {
     let rows = store::history::planner_rows(pool).await?;
     let heart = store::history::heart_profile(pool, today).await?;
     let mut power = Vec::new();
-    for kind in Kind::ALL.into_iter().filter(|k| k.intervals().is_some()) {
+    // An easy row's stands for the steady row's and the minimum session's too.
+    for kind in Kind::ALL.into_iter().filter(|k| k.intervals().is_some() || *k == Kind::Easy) {
         if let Some(p) = store::history::progression(pool, kind, heart.as_ref()).await? {
             power.push(Power { kind, note: p.note });
         }

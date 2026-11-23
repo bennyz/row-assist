@@ -1,7 +1,7 @@
 <script>
   // The plan: where the block stands, this week's rows, the rows ahead if
-  // each is rowed as proposed, and the interval workouts' power from last
-  // time. It all re-plans after every row and with each day's readiness.
+  // each is rowed as proposed, and the power from last time (the interval
+  // workouts' and the easy row's). It all re-plans after every row and with each day's readiness.
   import { getPlan } from './api.js';
   import { KINDS, PLANS, READINESS, minutesLabel } from './format.js';
 
