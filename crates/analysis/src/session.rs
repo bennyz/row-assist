@@ -17,7 +17,8 @@ use crate::zones::{HeartProfile, HeartStats, heart_stats};
 /// 4: an interval workout's work intervals (`work`), by the PM5's interval
 /// clock; distance carried across the PM5 resetting it each interval.
 /// 5: what each drive fault went with in work per stroke (`fault_costs`).
-pub const ANALYSIS_VERSION: u32 = 5;
+/// 6: early arms against the stroke's own elbow at the catch, not a fixed 160°.
+pub const ANALYSIS_VERSION: u32 = 6;
 
 /// A catch-to-catch time longer than this (under 10 spm) is a pause, not a stroke.
 pub const MAX_CYCLE_S: f64 = 6.0;

@@ -249,7 +249,7 @@ Ordered by what makes a stroke weak, which is what the baseline points to.
 |---|---|---|---|---|
 | 1 | **Short drive / incomplete compression** | Knee angle at catch too open; shins well short of vertical; short drive length | camera + PM5 | "Get to full compression" |
 | 2 | **Legs not connected (shooting the slide)** | In the first third of the drive, hip moves back much further than the wrist; force curve spikes early then dips | camera + PM5 | "Handle moves with the seat" |
-| 3 | **Early arms** | Elbow < ~160° while knee < ~150° (legs not yet down) | camera | "Legs first, arms long" |
+| 3 | **Early arms** | Elbow bent > 20° from its catch reading while knee < ~150° (legs not yet down) | camera | "Legs first, arms long" |
 | 4 | **Rushed recovery** | Recovery/drive < 1.5 at ≤ 24 spm (target ~2:1) | PM5 | "Slow the slide" |
 | 5 | **Catch posture** | Trunk < ~15° forward at catch (no pivot from hips), or over-reach | camera | "Reach from the hips" |
 | 6 | **Finish posture** | Layback > ~30° or < ~5°; wrist far above/below lower ribs | camera | "Sit tall, handle to ribs" |
@@ -260,8 +260,10 @@ Ordered by what makes a stroke weak, which is what the baseline points to.
 Thresholds start from common coaching norms and are tuned against recorded sessions.
 **Built (`analysis::technique`):** 1 = shin > 12° from vertical at the camera catch; 2 = trunk
 tips forward > 6° past its catch angle in the first third of the drive (if the hips leave and
-the handle doesn't, the trunk must tip: cleaner than comparing hip and wrist travel); 3 = elbow
-< 160° while the knee is still < 150°; 4 = recovery/drive < 1.5 at ≤ 24 spm, by the camera's
+the handle doesn't, the trunk must tip: cleaner than comparing hip and wrist travel); 3 = the elbow
+bent more than 20° from its own reading at the stroke's catch while the knee is still < 150°
+(analysis version 6: the stills showed a camera reads a straight arm at about 155–175°, so the
+first rule, a fixed elbow < 160°, flagged nearly every stroke); 4 = recovery/drive < 1.5 at ≤ 24 spm, by the camera's
 handle timing when there is one, else the PM5's (`technique::handle_timing`). The PM5's drive
 time only covers the flywheel speeding up, about half the handle's drive, so its ratio reads
 more than twice the real one. Session drive time and ratio, and the review's, use

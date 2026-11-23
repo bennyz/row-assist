@@ -36,7 +36,7 @@ pub struct FaultCost {
     pub strokes: u32,
     /// The measure behind the fault, the median of the worst and of the best
     /// third: degrees for the shin from vertical at the catch, the trunk's tip
-    /// forward and the elbow; for early body, the share of the drive the
+    /// forward and the elbow's bend from the catch; for early body, the share of the drive the
     /// handle had come when the body started.
     pub worst: f64,
     pub best: f64,
@@ -127,7 +127,7 @@ fn measure(fault: Fault, p: &StrokePose) -> Option<(f64, f64)> {
         Fault::ShortCompression => p.catch.shin.map(|v| (v, 1.0)),
         Fault::ShootingSlide => p.early_trunk_gain.map(|v| (v, 1.0)),
         Fault::EarlyBody => p.sequence.drive.body.map(|b| (b.start, -1.0)),
-        Fault::EarlyArms => p.elbow_while_legs_bent.map(|v| (v, -1.0)),
+        Fault::EarlyArms => p.arms_bend().map(|v| (v, 1.0)),
         Fault::RushedRecovery | Fault::EarlyKnees => None,
     }
 }
@@ -217,11 +217,13 @@ fn rank_z(a: &[f64], b: &[f64]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pose::Angles;
 
     const CYCLE_US: i64 = 3_000_000;
 
-    /// Stroke `i` with this much work and these arms; its curve is as high
-    /// as its work.
+    /// Stroke `i` with this much work and these arms (the elbow's lowest
+    /// while the legs drive, straight at 170° at the catch); its curve is as
+    /// high as its work.
     fn stroke(i: usize, joules: f64, elbow: f64) -> StrokeRecord {
         let mut s = StrokeRecord::empty();
         s.index = i as u32;
@@ -230,6 +232,10 @@ mod tests {
         s.watts = Some((joules / 3.0).round() as u16);
         s.force_n = vec![joules; CURVE_POINTS];
         s.pose = Some(StrokePose {
+            catch: Angles {
+                elbow: Some(170.0),
+                ..Angles::default()
+            },
             elbow_while_legs_bent: Some(elbow),
             ..StrokePose::default()
         });
@@ -257,7 +263,8 @@ mod tests {
         assert_eq!(c.fault, Fault::EarlyArms);
         assert!(c.clear, "{c:?}");
         assert!((-12.0..-8.0).contains(&c.work_pct), "{}", c.work_pct);
-        assert_eq!((c.worst, c.best), (120.0, 150.0));
+        // Bent 50° from the catch against 20°.
+        assert_eq!((c.worst, c.best), (50.0, 20.0));
         assert!(c.worst_curve[0] < c.best_curve[0]);
     }
 
@@ -297,7 +304,8 @@ mod tests {
         let c = &fault_costs(&strokes, &windows)[0];
         // Three intervals of 30 strokes, less the 4 in each one's first 10 s.
         assert_eq!(c.strokes, 26);
-        assert!(c.worst >= 140.0, "no rest stroke compared: {c:?}");
+        // The rests' arms bent 60°; the work's at most 30°.
+        assert!(c.worst <= 30.0, "no rest stroke compared: {c:?}");
     }
 
     #[test]

@@ -22,7 +22,7 @@
       of: (v) => (v < 0.05 ? 'back still' : `back tipping ${fixed(v, 1)}° forward`),
     },
     early_body: { name: 'When the body swings', of: (v) => `body swinging from ${fixed(v * 100)}% of the drive` },
-    early_arms: { name: 'When the arms bend', of: (v) => `elbows at ${fixed(v)}° while the legs pushed` },
+    early_arms: { name: 'When the arms bend', of: (v) => `arms bent ${fixed(v)}° from the catch while the legs pushed` },
   };
 
   const H = 120;

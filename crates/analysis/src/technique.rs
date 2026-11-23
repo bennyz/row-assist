@@ -25,7 +25,12 @@ const CATCH_WINDOW_US: i64 = 300_000;
 
 pub const SHORT_COMPRESSION_SHIN_DEG: f64 = 12.0;
 pub const SHOOTING_TRUNK_GAIN_DEG: f64 = 6.0;
-pub const EARLY_ARMS_ELBOW_DEG: f64 = 160.0;
+/// Early arms: the elbow bends more than this from its own reading at the
+/// stroke's catch while the knee is still bent. Against the stroke's own catch
+/// because a camera reads a straight arm anywhere from about 155° to 175° (its
+/// angle, the pose model): a fixed 160° line sat at the straight-arm reading
+/// and flagged nearly every stroke.
+pub const EARLY_ARMS_BEND_DEG: f64 = 20.0;
 /// Below this knee angle the legs are still driving.
 pub const LEGS_DOWN_KNEE_DEG: f64 = 150.0;
 pub const RUSHED_RATIO: f64 = 1.5;
@@ -158,6 +163,14 @@ pub struct StrokePose {
     pub finish_figure: Figure,
     /// When the legs, the body and the arms each moved, by the handle.
     pub sequence: Sequence,
+}
+
+impl StrokePose {
+    /// How far the elbow bent from its reading at the catch while the legs
+    /// were still bent, degrees.
+    pub fn arms_bend(&self) -> Option<f64> {
+        Some(self.catch.elbow? - self.elbow_while_legs_bent?)
+    }
 }
 
 /// How long the handle took, by the camera: `(drive, recovery)` in ms, from
@@ -394,8 +407,8 @@ pub fn faults(stroke: &StrokeRecord, pose: Option<&StrokePose>) -> Vec<FaultHit>
         if let Some(body) = p.sequence.drive.body.filter(|b| b.start < EARLY_BODY_START) {
             hit(Fault::EarlyBody, body.start);
         }
-        if let Some(elbow) = p.elbow_while_legs_bent.filter(|&e| e < EARLY_ARMS_ELBOW_DEG) {
-            hit(Fault::EarlyArms, elbow);
+        if let Some(bend) = p.arms_bend().filter(|&b| b > EARLY_ARMS_BEND_DEG) {
+            hit(Fault::EarlyArms, bend);
         }
         if let Some(legs) = p.sequence.recovery.legs.filter(|l| l.start < EARLY_KNEES_START) {
             hit(Fault::EarlyKnees, legs.start);
