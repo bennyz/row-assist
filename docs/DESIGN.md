@@ -381,9 +381,22 @@ be acted on, and a check failing for part of every stroke flipped the layout eac
   and body over quickly, then a slow slide). Rowing with it, the rower overlaps it; ahead, they
   reach the catch before it; behind, it is already driving. Where they differ in the order the
   legs, body and arms move is the faults of §5.4; one word on the last stroke's timing sits by
-  the legend ("On rhythm" / "Slow the slide"). It rows only in work parts with a rhythm: not
-  before Go, not in rests. Always on, by the rower's choice (Fable, a second model advising,
+  the legend ("On rhythm" / "Slow the slide"). It rows in work parts with a rhythm and through
+  the countdown before Go, timed so that a catch lands on Go (the rower asked to follow it, not
+  have it start with them); not in rests. Always on, by the rower's choice (Fable, a second model advising,
   suggested doses after §5.3's guidance hypothesis; the rower preferred it always there).
+- **Pacer boat** (`PaceLane`, since 2026-11-25): in a work part with a power target, a lane over
+  the stroke bar where a grey boat rows the target power from Go and never waits (the water's
+  marks run by at its speed), and the rower's boat sits ahead or behind it by their speed over
+  their last few strokes (PM5 watts to speed by the PM5's own 2.80/pace³, averaged with a 10 s
+  time constant, about 3 strokes at rate 20; 15 s lagged long enough to invite overshooting). The
+  band around the pacer is the power band; the words say "With the pacer", "Ahead: lighter" or
+  "Behind: harder" (never "harder" over the heart-rate ceiling). Asked for after a reference row
+  rowed far over its band despite the watts gauge and repeated "Ease off": the rower couldn't
+  control power from a number. Not a race: a lead isn't kept, so a fast start never has to be
+  paid back by rowing under the target; the boat comes back alongside as soon as the power is
+  right. The ghost's drive can't carry power instead: drive time changes only with about the cube
+  root of power (a quarter more power, about 7% less drive time), too little to see.
 - **The pace is the coach's** (`cues::Pacer`): fixed for the tests and rate steps. Easy and
   steady rows are UT2 at **one power held all the way**, by the rower's choice (2026-11-23), with
   heart rate measuring it rather than steering it: it lags the work by a minute or two and drifts

@@ -4,10 +4,12 @@
   // rhythm to row at from each work part's Go (row with it: where you differ
   // is the order your legs, body and arms move in, or your timing), a bar
   // under it that fills through the pacer's stroke and names the step to row
-  // now, the numbers against their targets, and in rests and between rows
+  // now, the pacer boat rowing the power to row at (keep alongside it), the
+  // numbers against their targets, and in rests and between rows
   // the last stroke: the order it was rowed in, and its catch and finish
   // frozen. The pacer's rate is the coach's, which with the power target
-  // steps down while heart rate stays over a ceiling.
+  // steps down while heart rate stays over a ceiling. Through the countdown
+  // the pacer is already rowing, with a catch on Go, so you can join it.
   // With `rowctl serve` it also shows the row's state and devices, the next
   // row's plan before the first stroke, and the phone's code while no camera
   // is connected; when a row is saved it hands over to the review
@@ -25,8 +27,9 @@
   import PhoneSetup from './PhoneSetup.svelte';
   import RowBar from './RowBar.svelte';
   import Sequence from './Sequence.svelte';
+  import PaceLane from './PaceLane.svelte';
   import StrokeBar from './StrokeBar.svelte';
-  import { driveEase, recoveryEase } from './pacer.js';
+  import { driveEase, lead, paced, recoveryEase, speedAt } from './pacer.js';
   import { StrokeClock, WRIST, rhythmAt } from './strokeclock.js';
   import { keepScreenOn } from './wake.js';
 
@@ -78,6 +81,10 @@
   // began (performance.now()).
   let pacerPart = null;
   let beatAt = $state(null);
+  // Your speed over your last few strokes of the work part (m/s), and when
+  // its last stroke came (performance.now()), for the pacer boat.
+  let paceV = $state(null);
+  let strokeAt = $state(null);
   // Your last few drive times, s, by the camera.
   let drives = $state([]);
   const recent = [];
@@ -133,10 +140,17 @@
         if (part !== pacerPart) {
           pacerPart = part;
           beatAt = part == null ? null : performance.now();
+          paceV = null;
+          strokeAt = null;
         }
       } else if (m.type === 'stroke') {
         last = m;
         if (m.drive_s != null) drives = [...drives.slice(1 - OWN_DRIVES), m.drive_s];
+        if (pacerPart != null && m.watts) {
+          const t = performance.now();
+          paceV = paced(paceV, speedAt(m.watts), strokeAt == null ? 0 : (t - strokeAt) / 1000);
+          strokeAt = t;
+        }
       } else if (m.type === 'focus') {
         focus = m;
       } else if (m.type === 'framing') {
@@ -153,6 +167,15 @@
           else note = `${m.last.strokes} strokes: too short to keep.`;
         }
         if (m.phase === 'rowing') note = null;
+        // Counting down: the pacer rows already, so that a catch lands on Go.
+        // Stopped before Go: it stops too.
+        if (m.workout.state === 'countdown' && beatAt == null && rhythm) {
+          const cycle = (rhythm.drive_s + rhythm.recovery_s) * 1000;
+          const left = m.workout.left_s * 1000;
+          beatAt = performance.now() + left - Math.ceil(left / cycle) * cycle;
+        } else if (m.workout.state === 'waiting' && pacerPart == null) {
+          beatAt = null;
+        }
         row = m;
       } else if (m.type === 'cue') {
         cue = m.text;
@@ -232,6 +255,13 @@
       ? { drive: true, u: t / rhythm.drive_s }
       : { drive: false, u: Math.min(1, (t - rhythm.drive_s) / rhythm.recovery_s) };
   });
+  // The pacer boat, in a work part with a power to row at: where your last
+  // few strokes put you against it, while you're rowing.
+  const paceBand = $derived(position?.stage === 'work' ? (targets?.watts ?? null) : null);
+  const paceWatts = $derived(paceBand ? (paceBand[0] + paceBand[1]) / 2 : null);
+  const paceLead = $derived(
+    paceBand && paceV != null && now - strokeAt < IDLE_S * 1000 ? lead(paceV, paceBand) : null,
+  );
   // The pace ghost: the good stroke on your body, rowed by the pacer.
   // Rowing with it, you overlap; rushing the slide, you reach the catch
   // before it does; late, it is already driving.
@@ -409,6 +439,7 @@
   {/if}
 
   <footer>
+    {#if paceBand}<PaceLane lead={paceLead} watts={paceWatts} speed={speedAt(paceWatts)} {now} harder={!hrHigh} />{/if}
     {#if beat}<StrokeBar {rhythm} {beat} />{/if}
     {#if cue}
       <p class="cue">{cue}</p>
@@ -493,8 +524,9 @@
     height: auto;
     /* Everything on one screen, read from the erg: the figure gives way to
        the numbers above it and the coach's words below. */
-    max-height: calc(100vh - 34rem);
-    min-height: 14rem;
+    max-height: calc(100vh - 37.5rem);
+    /* 720 high, the pacer lane, a cue and a focus: the figure gives most. */
+    min-height: 10rem;
   }
   .marks {
     margin-top: 0.75rem;

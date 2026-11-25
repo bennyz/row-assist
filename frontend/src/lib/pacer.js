@@ -1,5 +1,6 @@
 // The pacer's stroke: how the good stroke moves through its drive and
-// recovery in time (the pace ghost), and the steps the stroke bar names.
+// recovery in time (the pace ghost), and the steps the stroke bar names;
+// and the pacer boat, which rows the target power.
 
 // The handle through the drive: off the catch at once (the legs), easing
 // into the finish. Half even, half smoothstep: smoothstep alone sat at the
@@ -43,4 +44,28 @@ export function stepsAt(rhythm) {
       : (rhythm.drive_s + until(recoveryEase, s.at) * rhythm.recovery_s) / cycle,
   );
   return STEPS.map((s, i) => ({ ...s, from: from[i], width: (from[i + 1] ?? 1) - from[i] }));
+}
+
+// The pacer boat rows the target power from each work part's Go and never
+// waits; yours goes at your own speed over your last few strokes. Speed
+// from power is the PM5's own: watts = 2.80 / pace³, pace in s/m.
+export const speedAt = (watts) => Math.cbrt(watts / 2.8);
+// Your speed is averaged over about this long: 3 strokes at rate 20. One
+// stroke's power jumps about; a slower average lags (eased off from 67 W to
+// 53, 15 s kept you "ahead" 5 strokes), and you overshoot.
+export const PACE_S = 10;
+
+/** Your speed after `dt` seconds more at `v` (`was` null: your first stroke). */
+export function paced(was, v, dt) {
+  if (was == null) return v;
+  const k = Math.exp(-dt / PACE_S);
+  return was * k + v * (1 - k);
+}
+
+/** How far ahead of the pacer `v` puts you, in power bands: 0 alongside,
+ *  1 at the top of `band` ([low, high] watts), -1 at its bottom. */
+export function lead(v, band) {
+  const v0 = speedAt((band[0] + band[1]) / 2);
+  const edge = v >= v0 ? speedAt(band[1]) - v0 : v0 - speedAt(band[0]);
+  return (v - v0) / edge;
 }
