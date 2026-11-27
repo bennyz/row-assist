@@ -383,15 +383,20 @@ be acted on, and a check failing for part of every stroke flipped the layout eac
   legs, body and arms move is the faults of §5.4; one word on the last stroke's timing sits by
   the legend ("On rhythm" / "Slow the slide"). It rows in work parts with a rhythm and through
   the countdown before Go, timed so that a catch lands on Go (the rower asked to follow it, not
-  have it start with them); not in rests. Always on, by the rower's choice (Fable, a second model advising,
+  have it start with them); not in rests. Through the countdown it rows the first work part's
+  rhythm, sent with the countdown (`row::Workout::Countdown`): it had taken the rower's own rate
+  there, so a rower sitting still at the catch got no ghost until Go and had to chase it. Always on, by the rower's choice (Fable, a second model advising,
   suggested doses after §5.3's guidance hypothesis; the rower preferred it always there).
-- **Pacer boat** (`PaceLane`, since 2026-11-25): in a work part with a power target, a lane over
-  the stroke bar where a grey boat rows the target power from Go and never waits (the water's
-  marks run by at its speed), and the rower's boat sits ahead or behind it by their speed over
+- **Pacer boat** (`PaceLane`, since 2026-11-25): in a work part with a power target (and through
+  the countdown, at the first part's), a lane over the stroke bar where a grey boat, "Pacer 53 W",
+  rows the target power from Go and never waits (the water's marks run by at its speed), and the
+  rower's boat, "You", in its own lane under the pacer's, sits ahead or behind it by their speed over
   their last few strokes (PM5 watts to speed by the PM5's own 2.80/pace³, averaged with a 10 s
   time constant, about 3 strokes at rate 20; 15 s lagged long enough to invite overshooting). The
-  band around the pacer is the power band; the words say "With the pacer", "Ahead: lighter" or
-  "Behind: harder" (never "harder" over the heart-rate ceiling). Asked for after a reference row
+  band around the pacer is the power band; the words say what to do: "Level: hold this", "Ahead:
+  ease off" or "Behind: pull harder" (never "harder" over the heart-rate ceiling), and "Keep level
+  with the pacer" before the first stroke. The first words ("Ahead: lighter", one boat over the
+  other) weren't understood until well into the first row with it. Asked for after a reference row
   rowed far over its band despite the watts gauge and repeated "Ease off": the rower couldn't
   control power from a number. Not a race: a lead isn't kept, so a fast start never has to be
   paid back by rowing under the target; the boat comes back alongside as soon as the power is
@@ -406,6 +411,10 @@ be acted on, and a check failing for part of every stroke flipped the layout eac
   drifted on the last easy or steady row (`workout::easy_power`): its second half's power, 5 W
   more when the drift (§6, aerobic decoupling, measured from Go) was under 5%, 5 W less when
   over 10% (above the aerobic threshold), else the same; to the nearest 5 W, never under 30 W. A
+  row whose halves were rowed more than 10% apart in power can't be judged by its drift (the
+  power dropping looks just like heart rate drifting): the whole row's power, rounded down to 5 W.
+  Both of the first two easy rows were like that (54 W then 33 W; 58 W then 36 W) and walked the
+  power down to 30 W, which the rower found too light to row and so rowed 60 W against. A
   row too short to measure drift (13 min) gives nothing; with no row to go on the rower rows at
   their own power. Heart rate is a **guardrail**: for easy and steady rows the top of zone 3, for
   the 4×4's work 95% of max. Over it for 30 s, a step lighter and a stroke slower, at most every

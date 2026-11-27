@@ -243,6 +243,14 @@ impl Workout {
         matches!(self, Self::Piece { minutes: None, targets } if targets.is_empty())
     }
 
+    /// The first work part's targets: what Go asks for.
+    pub fn first(&self) -> Option<&Targets> {
+        match self {
+            Self::Piece { targets, .. } => Some(targets),
+            Self::Intervals { work, .. } => work.first(),
+        }
+    }
+
     /// A piece rowed for this long instead; intervals keep their own.
     pub fn set_minutes(&mut self, m: f64) {
         if let Self::Piece { minutes, .. } = self {
@@ -429,17 +437,34 @@ pub const DRIFT_AEROBIC_PCT: f64 = 5.0;
 pub const DRIFT_HIGH_PCT: f64 = 10.0;
 /// The step between one easy row's power and the next's, W.
 pub const EASY_STEP_W: f64 = 5.0;
+/// The halves' power further apart than this, % of the higher: no one power
+/// was held, and the drift only shows the power changing.
+pub const POWER_HELD_PCT: f64 = 10.0;
 
 /// An easy or steady row's power (UT2), from how the last one went: the
 /// power of its second half, where it settled, against how far heart rate
 /// drifted at it (`decoupling_pct`: watts per beat, second half against
 /// first). Under 5% the power was aerobic: a step more. Over 10% it was
 /// above the aerobic threshold: a step less, never under the floor.
-/// Between, the same. To the nearest 5 W. `None` for a row too short to
-/// measure drift: the first one's power is the rower's own.
+/// Between, the same. To the nearest 5 W. A row whose halves weren't rowed
+/// at one power (`POWER_HELD_PCT`) can't be judged by its drift: the whole
+/// row's power, rounded down (an easy row errs light). `None` for a row too
+/// short to measure drift: the first one's power is the rower's own.
 pub fn easy_power(last: &Summary) -> Option<Progression> {
     let drift = last.decoupling_pct?;
     let w = last.second_half.as_ref()?.watts?;
+    let first = last.first_half.as_ref()?.watts?;
+    if (first - w).abs() > first.max(w) * POWER_HELD_PCT / 100.0 {
+        let whole = last.whole.watts?;
+        let next = ((whole / 5.0).floor() * 5.0).max(cues::WATTS_FLOOR);
+        return Some(Progression {
+            watts: vec![next],
+            work_s: None,
+            note: format!(
+                "Last easy row: {first:.0} W in its first half and {w:.0} W in its second, not one power, so heart-rate drift can't judge it: {whole:.0} W over the row, {next:.0} W this time."
+            ),
+        });
+    }
     let (next, why) = if drift < DRIFT_AEROBIC_PCT {
         (w + EASY_STEP_W, "under 5%, aerobic")
     } else if drift > DRIFT_HIGH_PCT {
@@ -603,11 +628,15 @@ mod tests {
 
     #[test]
     fn an_easy_row_steps_by_how_far_heart_rate_drifted_on_the_last() {
-        let rowed = |watts: f64, drift: f64| Summary {
-            second_half: Some(crate::session::Segment {
+        let half = |watts: f64| {
+            Some(crate::session::Segment {
                 watts: Some(watts),
                 ..Default::default()
-            }),
+            })
+        };
+        let rowed = |watts: f64, drift: f64| Summary {
+            first_half: half(watts),
+            second_half: half(watts),
             decoupling_pct: Some(drift),
             ..Default::default()
         };
@@ -618,6 +647,18 @@ mod tests {
         assert_eq!(next(&rowed(41.0, 18.0)), Some(35.0), "above the threshold: 5 W less");
         assert_eq!(next(&rowed(32.0, 18.0)), Some(30.0), "never under the floor");
         assert_eq!(next(&Summary::default()), None, "too short to measure drift");
+        let mut eased = rowed(41.0, 18.0);
+        eased.first_half = half(45.0);
+        assert_eq!(next(&eased), Some(35.0), "under 10% apart is one power held");
+        // 2026-11-27: 13 minutes at about 60 W, then 36 W to the end.
+        let mut uneven = rowed(35.6, 36.5);
+        uneven.first_half = half(57.5);
+        uneven.whole.watts = Some(48.1);
+        assert_eq!(next(&uneven), Some(45.0), "power not held: the whole row's, rounded down");
+        assert_eq!(
+            easy_power(&uneven).unwrap().note,
+            "Last easy row: 58 W in its first half and 36 W in its second, not one power, so heart-rate drift can't judge it: 48 W over the row, 45 W this time."
+        );
         assert_eq!(
             easy_power(&rowed(41.0, 18.0)).unwrap().note,
             "Last easy row: 41 W in its second half, heart rate drifting 18% (over 10%, above the aerobic threshold): 35 W this time."

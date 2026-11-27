@@ -4,6 +4,7 @@
 //!
 //! The same state is pushed to `/ws/live` every second as `{"type":"row",…}`.
 
+use analysis::cues::Rhythm;
 use analysis::planner::Proposal;
 use analysis::readiness::Readiness;
 use analysis::technique::Fault;
@@ -73,8 +74,13 @@ pub struct Ended {
 pub enum Workout {
     #[default]
     Waiting,
-    /// Started: Go in `left_s`.
-    Countdown { left_s: f64 },
+    /// Started: Go in `left_s`, then the first work part's rhythm and power,
+    /// which the pace ghost and the pacer boat row through the countdown.
+    Countdown {
+        left_s: f64,
+        rhythm: Option<Rhythm>,
+        watts: Option<(f64, f64)>,
+    },
     Running,
     Done,
 }

@@ -167,8 +167,9 @@
           else note = `${m.last.strokes} strokes: too short to keep.`;
         }
         if (m.phase === 'rowing') note = null;
-        // Counting down: the pacer rows already, so that a catch lands on Go.
-        // Stopped before Go: it stops too.
+        row = m;
+        // Counting down: the pacer rows already, at the first part's rhythm,
+        // so that a catch lands on Go. Stopped before Go: it stops too.
         if (m.workout.state === 'countdown' && beatAt == null && rhythm) {
           const cycle = (rhythm.drive_s + rhythm.recovery_s) * 1000;
           const left = m.workout.left_s * 1000;
@@ -176,7 +177,6 @@
         } else if (m.workout.state === 'waiting' && pacerPart == null) {
           beatAt = null;
         }
-        row = m;
       } else if (m.type === 'cue') {
         cue = m.text;
         clearTimeout(cueTimer);
@@ -228,12 +228,13 @@
   // the seat slides.
   const me = $derived(joints?.some(Boolean) ? joints : null);
 
-  // The rhythm to row at: the session's rate, else your own, with the drive
+  // The rhythm to row at: the session's rate (through the countdown, its
+  // first part's), else your own, with the drive
   // at your own pace (the camera's, over your last strokes). The ghost is
   // there for where the time goes, drive against slide; a drive quicker than
   // yours only made it look rushed.
   const rhythm = $derived.by(() => {
-    const at = targets?.rhythm ?? (last?.rate ? rhythmAt(last.rate) : null);
+    const at = targets?.rhythm ?? row?.workout.rhythm ?? (last?.rate ? rhythmAt(last.rate) : null);
     if (!at || !drives.length) return at;
     const cycle = 60 / at.rate;
     const own = drives.toSorted((a, b) => a - b)[drives.length >> 1];
@@ -255,9 +256,16 @@
       ? { drive: true, u: t / rhythm.drive_s }
       : { drive: false, u: Math.min(1, (t - rhythm.drive_s) / rhythm.recovery_s) };
   });
-  // The pacer boat, in a work part with a power to row at: where your last
-  // few strokes put you against it, while you're rowing.
-  const paceBand = $derived(position?.stage === 'work' ? (targets?.watts ?? null) : null);
+  // The pacer boat, in a work part with a power to row at (and through the
+  // countdown, at the first part's): where your last few strokes put you
+  // against it, while you're rowing.
+  const paceBand = $derived(
+    position?.stage === 'work'
+      ? (targets?.watts ?? null)
+      : row?.workout.state === 'countdown'
+        ? (row.workout.watts ?? null)
+        : null,
+  );
   const paceWatts = $derived(paceBand ? (paceBand[0] + paceBand[1]) / 2 : null);
   const paceLead = $derived(
     paceBand && paceV != null && now - strokeAt < IDLE_S * 1000 ? lead(paceV, paceBand) : null,

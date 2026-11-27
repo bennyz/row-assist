@@ -626,9 +626,14 @@ impl Runner {
         let secs = |us: i64| Some((us as f64 / 1e6).max(0.0));
         self.state.workout = match self.start {
             Start::Waiting => row::Workout::Waiting,
-            Start::Countdown { go_us } => row::Workout::Countdown {
-                left_s: ((go_us - now_us) as f64 / 1e6).max(0.0),
-            },
+            Start::Countdown { go_us } => {
+                let first = self.coach.first_targets();
+                row::Workout::Countdown {
+                    left_s: ((go_us - now_us) as f64 / 1e6).max(0.0),
+                    rhythm: first.and_then(|t| t.rhythm()),
+                    watts: first.and_then(|t| t.watts),
+                }
+            }
             Start::Started if self.coach.running(now_us) => row::Workout::Running,
             Start::Started => row::Workout::Done,
         };
@@ -817,7 +822,10 @@ mod tests {
         feed(&mut r, warm, &mut next_tick).await;
         assert_eq!(state.borrow().workout, row::Workout::Waiting);
         r.start(warm_end);
-        assert!(matches!(state.borrow().workout, row::Workout::Countdown { left_s } if left_s == 10.0));
+        assert!(
+            matches!(state.borrow().workout, row::Workout::Countdown { left_s, rhythm: Some(_), .. } if left_s == 10.0),
+            "the ghost rows the first part's rhythm through the countdown"
+        );
         // The 4×4 from Go: work rowed, the 3-minute rests sat still (longer
         // than --end-after).
         let go = warm_end + COUNTDOWN_US;

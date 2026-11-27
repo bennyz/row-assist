@@ -377,6 +377,11 @@ impl Coach {
         }
     }
 
+    /// The first work part's targets: what Go will ask for.
+    pub fn first_targets(&self) -> Option<&Targets> {
+        self.pacer.as_ref()?.workout().first()
+    }
+
     pub fn started(&self) -> bool {
         self.pacer.as_ref().is_some_and(Pacer::started)
     }
